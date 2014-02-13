@@ -15,9 +15,13 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <string.h>
+#include <signal.h>
+
 #define PROTOPORT 36724 /* default protocol port number */
-#define QLEN 6 /* size of request queue */
-int visits = 0; /* counts client connections */
+#define QLEN 30 /* size of request queue */
+#define MAXCLIENTS 2 /* maximum allowable number of clients */
+#define BUFSIZE 240 /* server's maximum buffer size */
+
 /*------------------------------------------------------------------------
 * Program: server
 *
@@ -37,7 +41,8 @@ int visits = 0; /* counts client connections */
 *------------------------------------------------------------------------
 */
 
-typedef struct { /* structure to hold client info */
+/* global variables */
+typedef struct {
 		int used;
 		char *name;
 		int socket;
@@ -47,26 +52,35 @@ typedef struct { /* structure to hold client info */
 		int strikes;
 		int resync;
 	} clientinfo;
+clientinfo clientarray[MAXCLIENTS]; /* structure to hold client info */
+fd_set total_set, read_set; /* fd_sets to use with select */
 	
-static void clear_clientinfo(clientinfo *info);
+/* internal functions */
+static void clear_clientinfo(int client_no);
+void write_to_client(int socket, int client_no, char message[], int clear);
 
+
+/* Main */
 int main(int argc, char **argv)
 {
+	signal(SIGPIPE, SIG_IGN);
+
 	struct hostent *ptrh; /* pointer to a host table entry */
 	struct protoent *ptrp; /* pointer to a protocol table entry */
 	struct sockaddr_in sad; /* structure to hold server's address */
 	struct sockaddr_in cad; /* structure to hold client address */
-	
-	clientinfo clientarray[30]; /* array of clientinfo structures */
-	int i;
-	for (i=0;i<30;i++) {
-		clear_clientinfo(&clientarray[i]);
-	}
-	
+	struct timeval timeout; /* structure to hold timeout info for select */
 	int listensocket, tempsd; /* socket descriptors for listen port and acceptance */
 	int port; /* protocol port number */
 	int alen; /* length of address */
-	char buf[240]; /* buffer for string the server sends */
+	char buf[BUFSIZE]; /* buffer for string the server sends */
+	
+	timeout.tv_sec = 0; timeout.tv_usec = 0; /*initialize timeval struct */
+	FD_ZERO (&total_set); /* initialize fd_set */
+	int i;
+	for (i=0;i<30;i++) { /* initialize client info structure */
+		clear_clientinfo(i);
+	}
 	
 	#ifdef WIN32
 	WSADATA wsaData;
@@ -101,55 +115,112 @@ int main(int argc, char **argv)
 	/* Create a socket */
 	listensocket = socket(PF_INET, SOCK_STREAM, ptrp->p_proto);
 	if (listensocket < 0) {
-		fprintf(stderr, "socket creation failed\n");
+		perror ("socket");
 		exit(1);
 	}
 	
 	/* Bind a local address to the socket */
 	if (bind(listensocket, (struct sockaddr *)&sad, sizeof(sad)) < 0) {
-		fprintf(stderr,"bind failed\n");
+		perror ("bind");
 		exit(1);
 	}
 	
 	/* Specify size of request queue */
 	if (listen(listensocket, QLEN) < 0) {
-		fprintf(stderr,"listen failed\n");
+		perror ("listen");
 		exit(1);
 	}
+	FD_SET (listensocket, &total_set);
+	
+	int client_no;
 	
 	/* Main server loop - accept and handle requests */
-	while (visits < 3) {
-		alen = sizeof(cad);
-		if ( (tempsd=accept(listensocket, (struct sockaddr *)&cad, &alen)) < 0) {
-			fprintf(stderr, "accept failed\n");
-			exit(1);
+	while (1) {
+		read_set = total_set;
+		if (select (FD_SETSIZE, &read_set, NULL, NULL, NULL) < 0) {
+			perror ("select");
+			exit (1);
+		}		
+		for (i=0; i<FD_SETSIZE; i++) {
+			if (FD_ISSET (i, &read_set)) {
+				if (i == listensocket) {
+					/* connection ready to be accepted */
+					alen = sizeof(cad);
+					if ((tempsd = accept(listensocket, (struct sockaddr *)&cad, &alen)) < 0) {
+						perror ("accept");
+						exit (1);
+					}
+					for (client_no=0; client_no<MAXCLIENTS; client_no++) {
+						if (clientarray[client_no].used == 0)
+						break;
+					}
+					if (client_no < MAXCLIENTS) { /*add new connection to clientarray */
+						fprintf (stderr, "Connection accepted\n");
+						FD_SET (tempsd, &total_set);
+						clientarray[client_no].used = 1;
+						clientarray[client_no].socket = tempsd;
+						sprintf(buf, "You are client number %d.\n", client_no); //don't send anything here
+						write_to_client(tempsd, client_no, buf, 0);
+					}
+					else { /* send no vacancy message and drop connection */
+						fprintf (stderr, "Connection refused\n");
+						sprintf(buf, "no vacancy\n"); //change to properly formatted message
+						write_to_client(tempsd, client_no, buf, 0);
+						closesocket(tempsd);
+					}
+				}
+				else {
+					/* data available on already-connected socket */
+					int nbytes = read (i, buf, BUFSIZE);
+					if (nbytes < 0) {
+						perror ("read");
+						exit (1);
+					}
+					else if (nbytes == 0) { /* client has died - drop its connection and clear its info */
+						closesocket(i);
+						fprintf (stderr, "Connection dropped\n");
+						FD_CLR (i, &total_set);
+						for (client_no=0; client_no<MAXCLIENTS; client_no++) {
+							if (clientarray[client_no].socket == i)
+							break;
+						}
+						clear_clientinfo(client_no);
+					}
+					else {
+						//transfer data from buf to client's buffer here, stripping non-printable chars
+						//then attempt to parse message
+						fprintf (stderr, "Server: got message: '%s'\n", buf);
+					}
+				}
+			}
 		}
-		for (i=0;i<30;i++) {
-			if (clientarray[i].used == 0)
-				break;
-		}
-		clientarray[i].used = 1;
-		clientarray[i].socket = tempsd;
-		visits++;
-		sprintf(buf,"You are client number %d.\n", i);
-		send(clientarray[i].socket, buf, strlen(buf), 0);
-		sprintf(buf,"This server has been contacted %d time%s\n", visits, visits==1?".":"s.");
-		send(clientarray[i].socket, buf, strlen(buf), 0);
-		closesocket(clientarray[i].socket);
-		if (i > 0)
-		clear_clientinfo(&clientarray[i]);
 	}
 	
-	printf("This server was contacted %d times.\n", visits);
 	exit(0);
 }
 
 
-void clear_clientinfo(clientinfo *info)
+void write_to_client(int socket, int client_no, char message[], int clear)
 {
-	info[0].used = 0;
-	info[0].bufend = info[0].bufstart;
-	info[0].charcount = 0;
-	info[0].strikes = 0;
-	info[0].resync = 0;
+	char buf[BUFSIZE];
+	sprintf(buf, "%s", message);
+	int written = 1;
+	if (write(socket, &buf, strlen(buf)*sizeof(char)) < 0) {
+fprintf (stderr, "Write error\n");
+		if (clear != 0) {
+			FD_CLR (socket, &total_set);
+			clear_clientinfo(client_no);
+		}
+	}
+}
+
+
+void clear_clientinfo(int client_no)
+{
+	clientarray[client_no].used = 0;
+	clientarray[client_no].name = NULL;
+	clientarray[client_no].bufend = clientarray[client_no].bufstart;
+	clientarray[client_no].charcount = 0;
+	clientarray[client_no].strikes = 0;
+	clientarray[client_no].resync = 0;
 }
