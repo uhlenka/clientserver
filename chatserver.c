@@ -46,18 +46,21 @@ typedef struct {
 		int used;
 		char *name;
 		int socket;
-		char *bufstart;
-		char *bufend;
+		char *clibuf;
 		int charcount;
 		int strikes;
 		int resync;
 	} clientinfo;
 clientinfo clientarray[MAXCLIENTS]; /* structure to hold client info */
 fd_set total_set, read_set; /* fd_sets to use with select */
+char buf[BUFSIZE]; /* buffer for sending and receiving messages */
+char *bufp = buf;
 	
 /* internal functions */
+static void initialize_clientinfo(int client_no);
 static void clear_clientinfo(int client_no);
-void write_to_client(int socket, int client_no, char message[], int clear);
+static void write_to_client(int socket, int client_no, int clear);
+static void read_from_client(int socket, int client_no);
 
 
 /* Main */
@@ -73,13 +76,12 @@ int main(int argc, char **argv)
 	int listensocket, tempsd; /* socket descriptors for listen port and acceptance */
 	int port; /* protocol port number */
 	int alen; /* length of address */
-	char buf[BUFSIZE]; /* buffer for sending and receiving messages */
 	
 	timeout.tv_sec = 0; timeout.tv_usec = 0; /*initialize timeval struct */
 	FD_ZERO (&total_set); /* initialize fd_set */
 	int i;
 	for (i=0;i<30;i++) { /* initialize client info structure */
-		clear_clientinfo(i);
+		initialize_clientinfo(i);
 	}
 	
 	#ifdef WIN32
@@ -87,6 +89,7 @@ int main(int argc, char **argv)
 	WSAStartup(0x0101, &wsaData);
 	#endif
 	
+	memset(buf, 0, sizeof(buf)); /* clear read/write buffer */
 	memset((char *)&sad,0,sizeof(sad)); /* clear sockaddr structure */
 	sad.sin_family = AF_INET; /* set family to Internet */
 	sad.sin_addr.s_addr = INADDR_ANY; /* set the local IP address */
@@ -155,44 +158,43 @@ int main(int argc, char **argv)
 						break;
 					}
 					if (client_no < MAXCLIENTS) { /*add new connection to clientarray */
-						fprintf (stderr, "Connection accepted\n");
+						fprintf (stderr, "Client %d accepted\n", client_no);
 						FD_SET (tempsd, &total_set);
 						clientarray[client_no].used = 1;
 						clientarray[client_no].socket = tempsd;
 						sprintf(buf, "You are client number %d.\n", client_no); //don't send anything here
-						write_to_client(tempsd, client_no, buf, 0);
-						memset(buf, 0, sizeof(buf));
+						write_to_client(tempsd, client_no, 0);
 					}
 					else { /* send no vacancy message and drop connection */
-						fprintf (stderr, "Connection refused\n");
-						sprintf(buf, "no vacancy\n"); //change to properly formatted message
-						write_to_client(tempsd, client_no, buf, 0);
-						memset(buf, 0, sizeof(buf));
+						fprintf (stderr, "Client %d refused\n", client_no);
+						sprintf(buf, "(snovac)"); //change to properly formatted message
+						write_to_client(tempsd, client_no, 0);
 						closesocket(tempsd);
 					}
 				}
 				else {
 					/* data available on already-connected socket */
 					int nbytes = read (i, buf, BUFSIZE);
+					for (client_no=0; client_no<MAXCLIENTS; client_no++) {
+						if (clientarray[client_no].socket == i)
+						break;
+					}
 					if (nbytes < 0) {
 						perror ("read");
 						exit (1);
 					}
 					else if (nbytes == 0) { /* client has died - drop its connection and clear its info */
 						closesocket(i);
-						fprintf (stderr, "Connection dropped\n");
+						fprintf (stderr, "Client %d dropped\n", client_no);
 						FD_CLR (i, &total_set);
-						for (client_no=0; client_no<MAXCLIENTS; client_no++) {
-							if (clientarray[client_no].socket == i)
-							break;
-						}
 						clear_clientinfo(client_no);
 					}
-					else {
-						//transfer data from buf to client's buffer here, stripping non-printable chars
-						//then attempt to parse message
-						fprintf (stderr, "Server: got message: '%s'\n", buf);
-						memset(buf, 0, sizeof(buf));
+					else { /* transfer data to client's buffer and attempt to parse message */
+						fprintf (stderr, "Data available for client %d\n", client_no);
+						read_from_client(i, client_no);
+						//attempt to parse message here
+						fprintf (stderr, "Server: got message: '%s' from client %d\n", clientarray[client_no].clibuf, client_no);
+						memset(buf, 0, BUFSIZE);
 					}
 				}
 			}
@@ -203,10 +205,28 @@ int main(int argc, char **argv)
 }
 
 
-void write_to_client(int socket, int client_no, char message[], int clear)
+void read_from_client(int socket, int client_no)
 {
-	char buf[BUFSIZE];
-	sprintf(buf, "%s", message);
+	char *tempstart = malloc(BUFSIZE*sizeof(char));
+	char *tempend = tempstart;
+	char *tempbufp = buf;
+	int numchars = 0;
+	while (*tempbufp != 0) {
+		if (isprint(*tempbufp) != 0) {
+			*tempend = *tempbufp;
+			tempend++;
+		}
+		tempbufp++;
+		numchars++;
+	}
+	*tempend = *tempbufp;
+	strncat(clientarray[client_no].clibuf, tempstart, BUFSIZE-clientarray[client_no].charcount);
+	free(tempstart);
+}
+
+
+void write_to_client(int socket, int client_no, int clear)
+{
 	if (write(socket, &buf, strlen(buf)*sizeof(char)) < 0) {
 fprintf (stderr, "Write error\n");
 		if (clear != 0) {
@@ -214,14 +234,28 @@ fprintf (stderr, "Write error\n");
 			clear_clientinfo(client_no);
 		}
 	}
+	memset(buf, 0, BUFSIZE);
 }
 
 
 void clear_clientinfo(int client_no)
 {
 	clientarray[client_no].used = 0;
+	clientarray[client_no].socket = -1;
 	clientarray[client_no].name = NULL;
-	clientarray[client_no].bufend = clientarray[client_no].bufstart;
+	memset(clientarray[client_no].clibuf, 0, BUFSIZE);
+	clientarray[client_no].charcount = 0;
+	clientarray[client_no].strikes = 0;
+	clientarray[client_no].resync = 0;
+}
+
+
+void initialize_clientinfo(int client_no)
+{
+	clientarray[client_no].used = 0;
+	clientarray[client_no].socket = -1;
+	clientarray[client_no].name = NULL;
+	clientarray[client_no].clibuf = malloc(BUFSIZE*sizeof(char));
 	clientarray[client_no].charcount = 0;
 	clientarray[client_no].strikes = 0;
 	clientarray[client_no].resync = 0;
