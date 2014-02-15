@@ -73,7 +73,7 @@ int main(int argc, char **argv)
 	int listensocket, tempsd; /* socket descriptors for listen port and acceptance */
 	int port; /* protocol port number */
 	int alen; /* length of address */
-	char buf[BUFSIZE]; /* buffer for string the server sends */
+	char buf[BUFSIZE]; /* buffer for sending and receiving messages */
 	
 	timeout.tv_sec = 0; timeout.tv_usec = 0; /*initialize timeval struct */
 	FD_ZERO (&total_set); /* initialize fd_set */
@@ -161,11 +161,13 @@ int main(int argc, char **argv)
 						clientarray[client_no].socket = tempsd;
 						sprintf(buf, "You are client number %d.\n", client_no); //don't send anything here
 						write_to_client(tempsd, client_no, buf, 0);
+						memset(buf, 0, sizeof(buf));
 					}
 					else { /* send no vacancy message and drop connection */
 						fprintf (stderr, "Connection refused\n");
 						sprintf(buf, "no vacancy\n"); //change to properly formatted message
 						write_to_client(tempsd, client_no, buf, 0);
+						memset(buf, 0, sizeof(buf));
 						closesocket(tempsd);
 					}
 				}
@@ -190,6 +192,7 @@ int main(int argc, char **argv)
 						//transfer data from buf to client's buffer here, stripping non-printable chars
 						//then attempt to parse message
 						fprintf (stderr, "Server: got message: '%s'\n", buf);
+						memset(buf, 0, sizeof(buf));
 					}
 				}
 			}
@@ -204,7 +207,6 @@ void write_to_client(int socket, int client_no, char message[], int clear)
 {
 	char buf[BUFSIZE];
 	sprintf(buf, "%s", message);
-	int written = 1;
 	if (write(socket, &buf, strlen(buf)*sizeof(char)) < 0) {
 fprintf (stderr, "Write error\n");
 		if (clear != 0) {
