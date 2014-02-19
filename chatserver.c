@@ -1,15 +1,15 @@
 /* chatserver.c - code for server program that allows clients to chat with one another */
-//#ifndef unix
-//#define WIN32
-//#include <windows.h>
-//#include <winsock.h>
-//#else
+#ifndef unix
+#define WIN32
+#include <windows.h>
+#include <winsock.h>
+#else
 #define closesocket close
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
-//#endif
+#endif
 
 #include <stdio.h>
 #include <string.h>
@@ -22,13 +22,16 @@
 #define PROTOPORT 36724 /* default protocol port number */
 #define QLEN 30 /* size of request queue */
 #define MAXCLIENTS 2 /* maximum allowable number of clients */
-#define BUFSIZE 426 /* server's maximum buffer size */
+#define BUFSIZE 500 /* server's maximum buffer size */
 #define MAXMESSAGE 425 /* length of maximum allowable message */
 #define NAMESIZE 12 /* maximum client name length */
 
+#define CLEAR 1
+#define NOCLEAR 0 /* indicators for whether a client's info should be cleared on write error */
 
-// TODO: respond to successful message parse (& test), command line arguments, naming algorithm
-// don't forget to set MAXCLIENTS to 30 and uncomment WINDOWS lines above and below
+
+// TODO: respond to & test successful chat & stat, write naming algorithm & test cjoin, command line arguments
+// don't forget to set MAXCLIENTS to 30
 
 
 /*------------------------------------------------------------------------
@@ -40,7 +43,7 @@
 * (3) respond appropriately to any client messages
 * (4) go back to step (1)
 *
-* Syntax: server [ port ]
+* Syntax: chatserver [ port ]
 *
 * port - protocol port number to use
 *
@@ -53,6 +56,7 @@
 /* global variables */
 typedef struct {
 		int used;
+		int joined;
 		char *name;
 		int socket;
 		char *clibuf;
@@ -61,8 +65,12 @@ typedef struct {
 		int resync;
 	} clientinfo;
 clientinfo clientarray[MAXCLIENTS]; /* structure to hold client info */
+int numplayers = 0; /* total number of players that have joined */
 fd_set total_set, read_set; /* fd_sets to use with select */
 char buf[BUFSIZE]; /* buffer for sending and receiving messages */
+int minplayers = 2; /* minimum number of players needed to start a game */
+int lobbytime = 10; /* number of seconds until game begins if numplayers >= minplayers */
+
 	
 /* helper functions */
 static void initialize_clientinfo(int client_no);
@@ -70,6 +78,8 @@ static void clear_clientinfo(int client_no);
 static void write_to_client(int socket, int client_no, int clear);
 static void read_from_client(int socket, int client_no);
 static void parse_message(int client_no);
+static void assign_name(char **name, int client_no);
+static void build_player_list(char **listbuf);
 static int  find_right_paren(char **current, int *numchars);
 static void send_strike(int client_no, char reason);
 
@@ -96,8 +106,8 @@ int main(int argc, char **argv)
 	}
 	
 	#ifdef WIN32
-	//WSADATA wsaData;
-	//WSAStartup(0x0101, &wsaData);
+	WSADATA wsaData;
+	WSAStartup(0x0101, &wsaData);
 	#endif
 	
 	memset(buf, 0, sizeof(buf)); /* clear read/write buffer */
@@ -174,12 +184,12 @@ int main(int argc, char **argv)
 						clientarray[client_no].used = 1;
 						clientarray[client_no].socket = tempsd;
 						sprintf(buf, "You are client number %d.\n", client_no); //don't send anything here
-						write_to_client(tempsd, client_no, 0);
+						write_to_client(tempsd, client_no, CLEAR);
 					}
 					else { /* send no vacancy message and drop connection */
 						fprintf (stderr, "Client %d refused\n", client_no);
-						sprintf(buf, "(snovac)"); //change to properly formatted message
-						write_to_client(tempsd, client_no, 0);
+						sprintf(buf, "(snovac)");
+						write_to_client(tempsd, client_no, NOCLEAR);
 						closesocket(tempsd);
 					}
 				}
@@ -431,7 +441,7 @@ static void parse_message(int client_no)
                             numchars++;
                             tempbufp++;
                             if (*tempbufp == ')') { /* proper cjoin - apply naming algorithm if necessary and assign name */
-                                
+                                assign_name(&name, client_no);
                                 tempbufp++;
                                 if (*tempbufp == 0) {
                                     memset(clientarray[client_no].clibuf, 0, BUFSIZE);
@@ -622,6 +632,77 @@ static void parse_message(int client_no)
 }
 
 
+static void assign_name(char **name, int client_no)
+{
+	char *namepos = *name;
+	char temp[231];
+	char *temppos = temp;
+	
+	while (*namepos != ')') {
+		if (*namepos != ' ') {
+			*temppos = *namepos;
+			temppos++;
+		}
+		namepos++;
+	}
+	*temppos = 0;
+	
+	int length = strlen(temp);
+	if (length > NAMESIZE) {
+		//apply naming algorithm
+	}
+	else if (length == 0) {
+		int offset;
+		int i, j;
+		char number[3];
+		for (j=1; j<31; j++) {
+			sprintf(number, "~%d", j);
+			for (i=0; i<MAXCLIENTS; i++) {
+				if (strcmp(clientarray[i].name, number) == 0) {
+					offset++;
+				}
+			}
+		}
+		sprintf(clientarray[client_no].clibuf, "~%d", offset);
+	}
+	else {
+		sprintf(clientarray[client_no].clibuf, "%s", temp);
+	}
+	
+	clientarray[client_no].joined = 1;
+	numplayers++;
+	char listbuf[425];
+	build_player_list((char **)&listbuf);
+	sprintf(buf, "(sjoin(%s)(%s)(%d,%d))", clientarray[client_no].name, listbuf, minplayers, lobbytime);
+	write_to_client(clientarray[client_no].socket, client_no, CLEAR);
+}
+
+
+static void build_player_list(char **listbuf)
+{
+	int added = 0;
+	int i;
+	for (i=0; i<MAXCLIENTS; i++) {
+		if (clientarray[i].joined != 0) {
+			if (added == 0) {
+				strcat(*listbuf, clientarray[i].name);
+			}
+			else {
+				strcat(*listbuf, ",");
+				strcat(*listbuf, clientarray[i].name);
+			}
+			added++;
+		}
+	}
+	if (added == numplayers) {
+		fprintf(stderr, "Player list agrees with numplayers\n");
+	}
+	else {
+		fprintf(stderr, "Error - player list does not agree with numplayers\n");
+	}
+}
+
+
 static int find_right_paren(char **current, int *numchars)
 {
     char *pos = *current; pos++;
@@ -670,7 +751,7 @@ void send_strike(int client_no, char reason)
         clientarray[client_no].resync = 1;
         clientarray[client_no].charcount = 0;
     }
-    write_to_client(clientarray[client_no].socket, client_no, 1);
+    write_to_client(clientarray[client_no].socket, client_no, CLEAR);
     
     if (clientarray[client_no].used != 0 && clientarray[client_no].strikes == 3) {
         closesocket(clientarray[client_no].socket);
@@ -697,6 +778,7 @@ fprintf (stderr, "Client %d dropped - Write error\n", client_no);
 void clear_clientinfo(int client_no)
 {
 	clientarray[client_no].used = 0;
+	clientarray[client_no].joined = 0;
 	clientarray[client_no].socket = -1;
 	memset(clientarray[client_no].name, 0, NAMESIZE);
 	memset(clientarray[client_no].clibuf, 0, BUFSIZE);
@@ -709,6 +791,7 @@ void clear_clientinfo(int client_no)
 void initialize_clientinfo(int client_no)
 {
 	clientarray[client_no].used = 0;
+	clientarray[client_no].joined = 0;
 	clientarray[client_no].socket = -1;
 	clientarray[client_no].name = malloc(NAMESIZE*sizeof(char));
 	clientarray[client_no].clibuf = malloc(BUFSIZE*sizeof(char));
