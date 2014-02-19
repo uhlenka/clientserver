@@ -1,16 +1,16 @@
 /* client.c - code for example client program that uses TCP */
-#ifndef unix
+/*#ifndef unix
 #define WIN32
 #include <windows.h>
 #include <winsock.h>
-#else
+#else*/
 #define closesocket close
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <netinet/in.h>
 #include <netdb.h>
-#endif
+//#endif
 #include <time.h>
 #include <stdio.h>
 #include <string.h>
@@ -20,16 +20,17 @@
 #include <signal.h>
 #include <unistd.h>
 
-#define PROTOPORT 36724 /* default protocol port number */
 extern int errno;
+#define PROTOPORT 36724 /* default protocol port number */
 char localhost[] = "localhost"; /* default host name */
-char *dname = "max"; /* default client name */
+char uhlenka[] = "UHLENKA"; /* default client name */
+
 /*------------------------------------------------------------------------
 * Program: client
 *
 * Purpose: allocate a socket, connect to a server, and print all output
 *
-* Syntax: client [ name ]
+* Syntax: client [-s server] [-p port] [-n name] [-m]
 *
 * host - name of a computer on which server is executing
 * port - protocol port number server is using
@@ -49,32 +50,59 @@ char *argv[];
 	struct protoent *ptrp; /* pointer to a protocol table entry */
 	struct sockaddr_in sad; /* structure to hold an IP address */
 	int sd; /* socket descriptor */
-	int port; /* protocol port number */
 	char *host; /* pointer to host name */
 	int n; /* number of characters read */
 	char buf[1000]; /* buffer for data from the server */
+    
+    char *server = NULL;
+    int port = -1;
+    char *name = NULL;
+    int manual = 0;
 	
 	fd_set total_set, read_set; /* fd_sets to use with select */
 	FD_ZERO (&total_set); /* initialize fd_set */
 	FD_SET (STDIN_FILENO, &total_set);
 	
-	#ifdef WIN32
+	/*#ifdef WIN32
 	WSADATA wsaData;
 	WSAStartup(0x0101, &wsaData);
-	#endif
+	#endif*/
 	
 	memset((char *)&sad,0,sizeof(sad)); /* clear sockaddr structure */
 	sad.sin_family = AF_INET; /* set family to Internet */
-	
-	port = PROTOPORT; /* use default port number */
-	if (port > 0) /* test for legal value */
-		sad.sin_port = htons((u_short)port);
-	else { /* print error message and exit */
-		fprintf(stderr,"bad port number %s\n",argv[2]);
-		exit(1);
-	}
+    
+    int i;
+    for (i=1;i<argc;i++) {
+        if (server == NULL && strcmp(argv[i], "-s") == 0 && (i+1) < argc) {
+            server = argv[i+1];
+        }
+        else if (port == -1 && strcmp(argv[i], "-p") == 0 && (i+1) < argc) {
+            sscanf(argv[i+1], "%d", &port);
+        }
+        else if (name == NULL && strcmp(argv[i], "-n") == 0 && (i+1) < argc) {
+            name = argv[i+1];
+        }
+        else if (manual == 0 && strcmp(argv[i], "-m") == 0) {
+            manual = 1;
+        }
+    }
+    if (server == NULL) {
+        server = localhost;
+    }
+    if (port < 0) {
+        port = PROTOPORT;
+    }
+    if (name == NULL) {
+        name = uhlenka;
+    }
 
-	host = localhost;
+    if (port > 0) /* test for legal value */
+		sad.sin_port = htons((u_short)port);
+    else { /* print error message and exit */
+        fprintf(stderr,"bad port number %s\n",argv[2]);
+        exit(1);
+    }
+	host = server;
 	
 	/* Convert host name to equivalent IP address and copy to sad. */
 	ptrh = gethostbyname(host);
@@ -104,45 +132,58 @@ char *argv[];
 	}
 	FD_SET (sd, &total_set);
 	
-	int i;
 	int time = 0;
 	
 	while (1) {
-		if (time == 0) {
-			if (argc > 1) { /* use supplied name */
-				sprintf(buf, "(cjoin(%s))", argv[1]);
-			} else {
-				sprintf(buf, "(cjoin(%s))", dname); /* use default name */
-			}
-			write(sd, &buf, strlen(buf)*sizeof(char));
-			memset(buf, 0, 1000);
-			time++;
+        if (manual == 0) {
+            if (time == 0) {
+                sprintf(buf, "(cjoin(%s))", name);
+                write(sd, &buf, strlen(buf)*sizeof(char));
+                memset(buf, 0, 1000);
+                time++;
+            }
+            else {
+                int n = recv(sd, buf, sizeof(buf), 0);
+                if (n == 0) {
+                    closesocket(i);
+                    fprintf (stderr, "Connection dropped\n");
+                    exit(0);
+                }
+                else {
+                    write(1,buf,n); write(1, "\n", sizeof(char));
+                }
+                sleep(2);
+                sprintf(buf, "(cchat(any)(hello))");
+                write(sd, &buf, strlen(buf)*sizeof(char));
+                memset(buf, 0, 1000);
+            }
 		}
-		
-		read_set = total_set;
-		if (select (FD_SETSIZE, &read_set, NULL, NULL, NULL) < 0) {
-			perror ("select");
-			exit (1);
-		}
-		if (FD_ISSET (STDIN_FILENO, &read_set)) {
-			int n = read(STDIN_FILENO, buf, 1000);
-			if (strncmp(buf, "\n", 1 && strncmp(buf, "\r", 1) != 0) != 0) {
-				write(sd, &buf, n);
-			}
-		}
-		if (FD_ISSET (sd, &read_set)) {
-			n = recv(sd, buf, sizeof(buf), 0);
-			if (n == 0) {
-				closesocket(i);
-				fprintf (stderr, "Connection dropped\n");
-				exit(1);
-			}
-			else {
-				write(1,buf,n); write(1, "\n", sizeof(char));
-			}
-		}
-		memset(buf, 0, 1000);
-	}
+        else {
+            read_set = total_set;
+            if (select (FD_SETSIZE, &read_set, NULL, NULL, NULL) < 0) {
+                perror ("select");
+                exit (1);
+            }
+            if (FD_ISSET (STDIN_FILENO, &read_set)) {
+                int n = read(STDIN_FILENO, buf, 1000);
+                if (strncmp(buf, "\n", 1 && strncmp(buf, "\r", 1) != 0) != 0) {
+                    write(sd, &buf, n);
+                }
+            }
+            if (FD_ISSET (sd, &read_set)) {
+                n = recv(sd, buf, sizeof(buf), 0);
+                if (n == 0) {
+                    closesocket(i);
+                    fprintf (stderr, "Connection dropped\n");
+                    exit(1);
+                }
+                else {
+                    write(1,buf,n); write(1, "\n", sizeof(char));
+                }
+            }
+            memset(buf, 0, 1000);
+        }
+    }
 	
 	/* Terminate the client program gracefully. */
 	closesocket(sd);
