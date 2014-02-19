@@ -17,7 +17,6 @@
 #include <errno.h>
 #include <string.h>
 #include <signal.h>
-#include <netdb.h>
 
 #define PROTOPORT 36724 /* default protocol port number */
 #define QLEN 30 /* size of request queue */
@@ -30,7 +29,7 @@
 #define NOCLEAR 0 /* indicators for whether a client's info should be cleared on write error */
 
 
-// TODO: respond to & test successful chat & stat, write naming algorithm & test cjoin, command line arguments
+// TODO: respond to & test successful chat & stat, finish naming algorithm, command line arguments
 // don't forget to set MAXCLIENTS to 30
 
 
@@ -70,6 +69,7 @@ fd_set total_set, read_set; /* fd_sets to use with select */
 char buf[BUFSIZE]; /* buffer for sending and receiving messages */
 int minplayers = 2; /* minimum number of players needed to start a game */
 int lobbytime = 10; /* number of seconds until game begins if numplayers >= minplayers */
+char listbuf[MAXMESSAGE]; /* buffer for building player list */
 
 	
 /* helper functions */
@@ -79,7 +79,7 @@ static void write_to_client(int socket, int client_no, int clear);
 static void read_from_client(int socket, int client_no);
 static void parse_message(int client_no);
 static void assign_name(char **name, int client_no);
-static void build_player_list(char **listbuf);
+static void build_player_list();
 static int  find_right_paren(char **current, int *numchars);
 static void send_strike(int client_no, char reason);
 
@@ -110,7 +110,8 @@ int main(int argc, char **argv)
 	WSAStartup(0x0101, &wsaData);
 	#endif
 	
-	memset(buf, 0, sizeof(buf)); /* clear read/write buffer */
+	memset(buf, '\0', BUFSIZE); /* clear read/write buffer */
+	memset(listbuf, '\0', MAXMESSAGE); /* clear player list buffer */
 	memset((char *)&sad,0,sizeof(sad)); /* clear sockaddr structure */
 	sad.sin_family = AF_INET; /* set family to Internet */
 	sad.sin_addr.s_addr = INADDR_ANY; /* set the local IP address */
@@ -141,6 +142,13 @@ int main(int argc, char **argv)
 	if (listensocket < 0) {
 		perror ("socket");
 		exit(1);
+	}
+	
+	// lose the pesky "Address already in use" error message 
+	int flag = 1;
+	if (setsockopt(listensocket,SOL_SOCKET,SO_REUSEADDR,&flag,sizeof(int)) == -1) { 
+    	perror("setsockopt"); 
+    	exit(1); 
 	}
 	
 	/* Bind a local address to the socket */
@@ -179,15 +187,15 @@ int main(int argc, char **argv)
 						break;
 					}
 					if (client_no < MAXCLIENTS) { /*add new connection to clientarray */
-						fprintf (stderr, "Client %d accepted\n", client_no);
+fprintf (stderr, "Accepted: Client %d\n", client_no);
 						FD_SET (tempsd, &total_set);
 						clientarray[client_no].used = 1;
 						clientarray[client_no].socket = tempsd;
-						sprintf(buf, "You are client number %d.\n", client_no); //don't send anything here
-						write_to_client(tempsd, client_no, CLEAR);
+						//sprintf(buf, "You are client number %d.\n", client_no); //don't send anything here
+						//write_to_client(tempsd, client_no, CLEAR);
 					}
 					else { /* send no vacancy message and drop connection */
-						fprintf (stderr, "Client %d refused\n", client_no);
+fprintf (stderr, "Refused: Client %d\n", client_no);
 						sprintf(buf, "(snovac)");
 						write_to_client(tempsd, client_no, NOCLEAR);
 						closesocket(tempsd);
@@ -195,28 +203,29 @@ int main(int argc, char **argv)
 				}
 				else {
 					/* data available on already-connected socket */
-					int nbytes = read (i, buf, BUFSIZE);
+					int nbytes = recv (i, buf, BUFSIZE, MSG_DONTWAIT);
 					for (client_no=0; client_no<MAXCLIENTS; client_no++) {
 						if (clientarray[client_no].socket == i)
 						break;
 					}
 					if (nbytes < 0) {
-						perror ("read");
-						exit (1);
+fprintf (stderr, "Error: recv on client %d\n", client_no);
 					}
 					else if (nbytes == 0) { /* client has died - drop its connection and clear its info */
 						closesocket(i);
-						fprintf (stderr, "Client %d dropped - died\n", client_no);
+fprintf (stderr, "Dropped: Client %d - died\n", client_no);
+						if (clientarray[client_no].joined != 0) {
+							numplayers--;
+						}
 						FD_CLR (i, &total_set);
 						clear_clientinfo(client_no);
 					}
 					else { /* transfer data to client's buffer and attempt to parse message */
-						fprintf (stderr, "Data available for client %d\n", client_no);
+						//fprintf (stderr, "Data available for client %d\n", client_no);
 						read_from_client(i, client_no);
-                        memset(buf, 0, BUFSIZE);
+                        memset(buf, '\0', BUFSIZE);
 						parse_message(client_no);
-						fprintf (stderr, "Server: got message: '%s' from client %d\n", clientarray[client_no].clibuf, client_no);
-						memset(buf, 0, BUFSIZE);
+						memset(buf, '\0', BUFSIZE);
 					}
 				}
 			}
@@ -233,7 +242,7 @@ void read_from_client(int socket, int client_no)
 	char *tempend = tempstart;
 	char *tempbufp = buf;
 	int numchars = clientarray[client_no].charcount;
-	while (*tempbufp != 0 && numchars < BUFSIZE) {
+	while (*tempbufp != '\0' && numchars < BUFSIZE) {
 		if (isprint(*tempbufp) != 0) {
 			*tempend = *tempbufp;
 			tempend++;
@@ -241,7 +250,7 @@ void read_from_client(int socket, int client_no)
 		tempbufp++;
 		numchars++;
 	}
-	*tempend = 0;
+	*tempend = '\0';
 	strncat(clientarray[client_no].clibuf, tempstart, BUFSIZE-clientarray[client_no].charcount);
     clientarray[client_no].charcount = numchars;
 	free(tempstart);
@@ -252,12 +261,13 @@ static void parse_message(int client_no)
 {
     char *tempbufp = clientarray[client_no].clibuf;
     int numchars;
-    //char buffer[BUFSIZE];
+    
+fprintf (stderr, "Message: '%s' from client %d\n", clientarray[client_no].clibuf, client_no);
     
     if (clientarray[client_no].resync == 0) { /* not resychronizing - parse normally */
         numchars = 0;
         if (*tempbufp != '(') {
-            if (*tempbufp == 0) {
+            if (*tempbufp == '\0') {
                 return;
             }
             send_strike(client_no, 'm');
@@ -270,7 +280,7 @@ static void parse_message(int client_no)
         numchars++;
         tempbufp++;
         if (*tempbufp != 'c') {
-            if (*tempbufp == 0) {
+            if (*tempbufp == '\0') {
                 return;
             }
             send_strike(client_no, 'm');
@@ -300,7 +310,7 @@ static void parse_message(int client_no)
                             if (result == 0) {
                                 return;
                             }
-                            else if (result = -1) {
+                            else if (result == -1) {
                                 send_strike(client_no, 'l');
                                 if (clientarray[client_no].used != 0) {
                                     sprintf(clientarray[client_no].clibuf, "%s", tempbufp);
@@ -316,7 +326,7 @@ static void parse_message(int client_no)
                                 if (result == 0) {
                                     return;
                                 }
-                                else if (result = -1) {
+                                else if (result == -1) {
                                     send_strike(client_no, 'l');
                                     if (clientarray[client_no].used != 0) {
                                         sprintf(clientarray[client_no].clibuf, "%s", tempbufp);
@@ -329,8 +339,8 @@ static void parse_message(int client_no)
                                 if (*tempbufp == ')') { /* proper cchat - truncate message if necessary and send to recipients */
                                     
                                     tempbufp++;
-                                    if (*tempbufp == 0) {
-                                        memset(clientarray[client_no].clibuf, 0, BUFSIZE);
+                                    if (*tempbufp == '\0') {
+                                        memset(clientarray[client_no].clibuf, '\0', BUFSIZE);
                                         clientarray[client_no].charcount = 0;
                                         return;
                                     }
@@ -340,7 +350,7 @@ static void parse_message(int client_no)
                                         parse_message(client_no);
                                     }
                                 }
-                                else if (*tempbufp == 0) { /* message not finished - stop parsing */
+                                else if (*tempbufp == '\0') { /* message not finished - stop parsing */
                                     return;
                                 }
                                 else { /* message malformed - send strike and resynchronize */
@@ -352,7 +362,7 @@ static void parse_message(int client_no)
                                     }
                                 }
                             }
-                            else if (*tempbufp == 0) {
+                            else if (*tempbufp == '\0') {
                                 return;
                             }
                             else {
@@ -364,7 +374,7 @@ static void parse_message(int client_no)
                                 }
                             }
                         }
-                        else if (*tempbufp == 0) {
+                        else if (*tempbufp == '\0') {
                             return;
                         }
                         else {
@@ -376,7 +386,7 @@ static void parse_message(int client_no)
                             }
                         }
                     }
-                    else if (*tempbufp == 0) {
+                    else if (*tempbufp == '\0') {
                         return;
                     }
                     else {
@@ -388,7 +398,7 @@ static void parse_message(int client_no)
                         }
                     }
                 }
-                else if (*tempbufp == 0) {
+                else if (*tempbufp == '\0') {
                     return;
                 }
                 else {
@@ -400,7 +410,7 @@ static void parse_message(int client_no)
                     }
                 }
             }
-            else if (*tempbufp == 0) {
+            else if (*tempbufp == '\0') {
                 return;
             }
             else {
@@ -430,7 +440,7 @@ static void parse_message(int client_no)
                             if (result == 0) {
                                 return;
                             }
-                            else if (result = -1) {
+                            else if (result == -1) {
                                 send_strike(client_no, 'l');
                                 if (clientarray[client_no].used != 0) {
                                     sprintf(clientarray[client_no].clibuf, "%s", tempbufp);
@@ -441,80 +451,88 @@ static void parse_message(int client_no)
                             numchars++;
                             tempbufp++;
                             if (*tempbufp == ')') { /* proper cjoin - apply naming algorithm if necessary and assign name */
-                                assign_name(&name, client_no);
-                                tempbufp++;
-                                if (*tempbufp == 0) {
-                                    memset(clientarray[client_no].clibuf, 0, BUFSIZE);
-                                    clientarray[client_no].charcount = 0;
-                                    return;
+fprintf (stderr, "Cjoin: client %d - ", client_no);
+                            	if (strlen(clientarray[client_no].name) == 0) {
+fprintf (stderr, "new player\n");
+                                	assign_name(&name, client_no);
                                 }
                                 else {
-                                    sprintf(clientarray[client_no].clibuf, "%s", tempbufp);
-                                    clientarray[client_no].charcount = 0;
-                                    parse_message(client_no);
+fprintf (stderr, "already joined\n");
                                 }
-                            }
-                            else if (*tempbufp == 0) { /* message not finished - stop parsing */
-                                return;
-                            }
-                            else { /* message malformed - send strike and resynchronize */
-                                send_strike(client_no, 'm');
-                                if (clientarray[client_no].used != 0) {
-                                    sprintf(clientarray[client_no].clibuf, "%s", tempbufp);
-                                    clientarray[client_no].charcount = 0;
-                                    parse_message(client_no);
-                                }
-                            }
-                        }
-                        else if (*tempbufp == 0) {
-                            return;
-                        }
-                        else {
-                            send_strike(client_no, 'm');
-                            if (clientarray[client_no].used != 0) {
-                                sprintf(clientarray[client_no].clibuf, "%s", tempbufp);
-                                clientarray[client_no].charcount = 0;
-                                parse_message(client_no);
-                            }
-                        }
-                    }
-                    else if (*tempbufp == 0) {
-                        return;
-                    }
-                    else {
-                        send_strike(client_no, 'm');
-                        if (clientarray[client_no].used != 0) {
-                            sprintf(clientarray[client_no].clibuf, "%s", tempbufp);
-                            clientarray[client_no].charcount = 0;
-                            parse_message(client_no);
-                        }
-                    }
-                }
-                else if (*tempbufp == 0) {
-                    return;
-                }
-                else {
-                    send_strike(client_no, 'm');
-                    if (clientarray[client_no].used != 0) {
-                        sprintf(clientarray[client_no].clibuf, "%s", tempbufp);
-                        clientarray[client_no].charcount = 0;
-                        parse_message(client_no);
-                    }
-                }
-            }
-            else if (*tempbufp == 0) {
-                return;
-            }
-            else {
-                send_strike(client_no, 'm');
-                if (clientarray[client_no].used != 0) {
-                    sprintf(clientarray[client_no].clibuf, "%s", tempbufp);
-                    clientarray[client_no].charcount = 0;
-                    parse_message(client_no);
-                }
-            }
-        }
-        else if (*tempbufp == 's') { /* look for stat message */
+fprintf (stderr, "Name: client %d: %s\n", client_no, clientarray[client_no].name);
+                            	tempbufp++;
+                            	if (*tempbufp == '\0') {
+                                	memset(clientarray[client_no].clibuf, '\0', BUFSIZE);
+                                	clientarray[client_no].charcount = 0;
+                                	return;
+                            	}
+                            	else {
+                                	sprintf(clientarray[client_no].clibuf, "%s", tempbufp);
+                                	clientarray[client_no].charcount = 0;
+                                	parse_message(client_no);
+                            	}
+                        	}
+                        	else if (*tempbufp == '\0') { /* message not finished - stop parsing */
+                            	return;
+                        	}
+                        	else { /* message malformed - send strike and resynchronize */
+                            	send_strike(client_no, 'm');
+                            	if (clientarray[client_no].used != 0) {
+                                	sprintf(clientarray[client_no].clibuf, "%s", tempbufp);
+                                	clientarray[client_no].charcount = 0;
+                                	parse_message(client_no);
+                            	}
+                        	}
+                    	}
+                    	else if (*tempbufp == '\0') {
+                        	return;
+                    	}
+                    	else {
+                        	send_strike(client_no, 'm');
+                        	if (clientarray[client_no].used != 0) {
+                            	sprintf(clientarray[client_no].clibuf, "%s", tempbufp);
+                            	clientarray[client_no].charcount = 0;
+                            	parse_message(client_no);
+                        	}
+                    	}
+                	}
+                	else if (*tempbufp == '\0') {
+                    	return;
+                	}
+                 	else {
+                    	send_strike(client_no, 'm');
+                    	if (clientarray[client_no].used != 0) {
+                        	sprintf(clientarray[client_no].clibuf, "%s", tempbufp);
+                        	clientarray[client_no].charcount = 0;
+                        	parse_message(client_no);
+                    	}
+                	}
+            	}
+            	else if (*tempbufp == '\0') {
+                	return;
+            	}
+            	else {
+                	send_strike(client_no, 'm');
+                	if (clientarray[client_no].used != 0) {
+                    	sprintf(clientarray[client_no].clibuf, "%s", tempbufp);
+                    	clientarray[client_no].charcount = 0;
+                    	parse_message(client_no);
+                	}
+            	}
+        	}
+        	else if (*tempbufp == '\0') {
+            	return;
+        	}
+        	else {
+            	send_strike(client_no, 'm');
+           		if (clientarray[client_no].used != 0) {
+                	sprintf(clientarray[client_no].clibuf, "%s", tempbufp);
+                	clientarray[client_no].charcount = 0;
+                	parse_message(client_no);
+            	}
+        	}
+    	}
+    	else if (*tempbufp == 's') { /* look for stat message */
             tempbufp++;
             if (*tempbufp == 't') {
                 tempbufp++;
@@ -523,10 +541,14 @@ static void parse_message(int client_no)
                     if (*tempbufp == 't') {
                         tempbufp++;
                         if (*tempbufp == ')') { /* proper cstat - respond with list of players */
-                            
+fprintf (stderr, "Cstat: client %d\n", client_no);
+                            build_player_list();
+                            sprintf(buf, "(sstat(%s))", listbuf);
+                            memset(listbuf, '\0', MAXMESSAGE);
+                            write_to_client(clientarray[client_no].socket, client_no, CLEAR);
                             tempbufp++;
-                            if (*tempbufp == 0) {
-                                memset(clientarray[client_no].clibuf, 0, BUFSIZE);
+                            if (*tempbufp == '\0') {
+                                memset(clientarray[client_no].clibuf, '\0', BUFSIZE);
                                 clientarray[client_no].charcount = 0;
                                 return;
                             }
@@ -536,7 +558,7 @@ static void parse_message(int client_no)
                                 parse_message(client_no);
                             }
                         }
-                        else if (*tempbufp == 0) { /* message not finished - stop parsing */
+                        else if (*tempbufp == '\0') { /* message not finished - stop parsing */
                             return;
                         }
                         else { /* message malformed - send strike and resynchronize */
@@ -548,7 +570,7 @@ static void parse_message(int client_no)
                             }
                         }
                     }
-                    else if (*tempbufp == 0) {
+                    else if (*tempbufp == '\0') {
                         return;
                     }
                     else {
@@ -560,7 +582,7 @@ static void parse_message(int client_no)
                         }
                     }
                 }
-                else if (*tempbufp == 0) {
+                else if (*tempbufp == '\0') {
                     return;
                 }
                 else {
@@ -572,7 +594,7 @@ static void parse_message(int client_no)
                     }
                 }
             }
-            else if (*tempbufp == 0) {
+            else if (*tempbufp == '\0') {
                 return;
             }
             else {
@@ -583,23 +605,23 @@ static void parse_message(int client_no)
                     parse_message(client_no);
                 }
             }
-        }
-        else if (*tempbufp == 0) {
-            return;
-        }
-        else {
-            send_strike(client_no, 'm');
-            if (clientarray[client_no].used != 0) {
-                sprintf(clientarray[client_no].clibuf, "%s", tempbufp);
-                clientarray[client_no].charcount = 0;
-                parse_message(client_no);
-            }
-        }
+    	}
+    	else if (*tempbufp == '\0') {
+        	return;
+    	}
+    	else {
+        	send_strike(client_no, 'm');
+        	if (clientarray[client_no].used != 0) {
+            	sprintf(clientarray[client_no].clibuf, "%s", tempbufp);
+            	clientarray[client_no].charcount = 0;
+            	parse_message(client_no);
+       		}
+    	}
     }
     else { /* resynchronizing - look for "(c" sequence */
         numchars = clientarray[client_no].charcount;
         int success = 0;
-        while (*tempbufp != 0 && numchars < MAXMESSAGE) {
+        while (*tempbufp != '\0' && numchars < MAXMESSAGE) {
             if (*tempbufp == '(') {
                 char *peek = tempbufp; peek++;
                 if (*peek == 'c') {
@@ -624,8 +646,8 @@ static void parse_message(int client_no)
                 parse_message(client_no);
             }
         }
-        else if (*tempbufp == 0) { /* reached end of message - clear buffer and stop parsing */
-            memset(clientarray[client_no].clibuf, 0, BUFSIZE);
+        else if (*tempbufp == '\0') { /* reached end of message - clear buffer and stop parsing */
+            memset(clientarray[client_no].clibuf, '\0', BUFSIZE);
             clientarray[client_no].charcount += numchars;
         }
     }
@@ -635,7 +657,7 @@ static void parse_message(int client_no)
 static void assign_name(char **name, int client_no)
 {
 	char *namepos = *name;
-	char temp[231];
+	char temp[232];
 	char *temppos = temp;
 	
 	while (*namepos != ')') {
@@ -645,60 +667,105 @@ static void assign_name(char **name, int client_no)
 		}
 		namepos++;
 	}
-	*temppos = 0;
+	*temppos = '\0';
 	
 	int length = strlen(temp);
-	if (length > NAMESIZE) {
-		//apply naming algorithm
-	}
-	else if (length == 0) {
-		int offset;
-		int i, j;
+	if (length == 0) { /* zero length name - assign ~# */
+		int offset = 1;
+		int i, j, match;
 		char number[3];
 		for (j=1; j<31; j++) {
+			memset(number, '\0', 4);
 			sprintf(number, "~%d", j);
 			for (i=0; i<MAXCLIENTS; i++) {
+				match = 0;
 				if (strcmp(clientarray[i].name, number) == 0) {
+					match = 1;
 					offset++;
+					break;
 				}
 			}
+			if (match == 0) {
+				break;
+			}
 		}
-		sprintf(clientarray[client_no].clibuf, "~%d", offset);
+		sprintf(clientarray[client_no].name, "~%d", offset);
 	}
 	else {
-		sprintf(clientarray[client_no].clibuf, "%s", temp);
+		if (length > NAMESIZE) { /* too long - truncate */
+			temp[12] = '\0';
+		}
+		int i, j, match = 0;
+		for (i=0; i<MAXCLIENTS; i++) { /* check for matches */
+			if (strcmp(clientarray[i].name, temp) == 0) {
+				match = 1;
+				break;
+			}
+		}
+		if (match == 0) { /* no matches - assign name */
+			sprintf(clientarray[client_no].name, "%s", temp);
+		}
+		else { /* match found - assign first unmatched alternative */
+			char tentative[12];
+			char number[3];
+			int offset = 1;
+			for (j=1; j<31; j++) {
+				memset(tentative, '\0', 13);
+				memset(number, '\0', 4);
+				if (j < 10) {
+					snprintf(tentative, 11, "%s", temp);
+				}
+				else {
+					snprintf(tentative, 10, "%s", temp);
+				}
+				sprintf(number, "~%d", j);
+				strcat(tentative, number);
+				for (i=0; i<MAXCLIENTS; i++) {
+					match = 0;
+					if (strcmp(clientarray[i].name, tentative) == 0) {
+						match = 1;
+						offset++;
+						break;
+					}
+				}
+				if (match == 0) {
+					break;
+				}
+			}
+			sprintf(clientarray[client_no].name, "%s", tentative);
+		}
 	}
-	
+
+	/* update player information and send sjoin */
 	clientarray[client_no].joined = 1;
 	numplayers++;
-	char listbuf[425];
-	build_player_list((char **)&listbuf);
+	build_player_list();
 	sprintf(buf, "(sjoin(%s)(%s)(%d,%d))", clientarray[client_no].name, listbuf, minplayers, lobbytime);
+	memset(listbuf, '\0', MAXMESSAGE);
 	write_to_client(clientarray[client_no].socket, client_no, CLEAR);
 }
 
 
-static void build_player_list(char **listbuf)
+static void build_player_list()
 {
 	int added = 0;
 	int i;
 	for (i=0; i<MAXCLIENTS; i++) {
 		if (clientarray[i].joined != 0) {
 			if (added == 0) {
-				strcat(*listbuf, clientarray[i].name);
+				sprintf(listbuf, "%s", clientarray[i].name);
 			}
 			else {
-				strcat(*listbuf, ",");
-				strcat(*listbuf, clientarray[i].name);
+				strcat(listbuf, ",");
+				strcat(listbuf, clientarray[i].name);
 			}
 			added++;
 		}
 	}
 	if (added == numplayers) {
-		fprintf(stderr, "Player list agrees with numplayers\n");
 	}
 	else {
-		fprintf(stderr, "Error - player list does not agree with numplayers\n");
+fprintf(stderr, "Error - player list does not agree with numplayers\n");
 	}
 }
 
@@ -708,7 +775,7 @@ static int find_right_paren(char **current, int *numchars)
     char *pos = *current; pos++;
     int chars = *numchars;
     
-    while (*pos != 0 && chars < MAXMESSAGE) {
+    while (*pos != '\0' && chars < MAXMESSAGE) {
         chars++;
         if (*pos == ')') {
             break;
@@ -716,10 +783,12 @@ static int find_right_paren(char **current, int *numchars)
         pos++;
     }
     *numchars = chars;
-    if (*pos == 0) {
+    if (*pos == '\0') {
+    	*current = pos;
         return 0;
     }
     else if (chars >= MAXMESSAGE) {
+    	*current = pos;
         return -1;
     }
     else {
@@ -752,10 +821,14 @@ void send_strike(int client_no, char reason)
         clientarray[client_no].charcount = 0;
     }
     write_to_client(clientarray[client_no].socket, client_no, CLEAR);
+fprintf(stderr, "Strike: %d to client %d\n", clientarray[client_no].strikes, client_no);
     
     if (clientarray[client_no].used != 0 && clientarray[client_no].strikes == 3) {
         closesocket(clientarray[client_no].socket);
-        fprintf (stderr, "Client %d dropped - 3 strikes\n", client_no);
+fprintf (stderr, "Dropped: Client %d - 3 strikes\n", client_no);
+        if (clientarray[client_no].joined != 0) {
+				numplayers--;
+			}
         FD_CLR (clientarray[client_no].socket, &total_set);
         clear_clientinfo(client_no);
     }
@@ -765,13 +838,16 @@ void send_strike(int client_no, char reason)
 void write_to_client(int socket, int client_no, int clear)
 {
 	if (write(socket, &buf, strlen(buf)*sizeof(char)) < 0) {
-fprintf (stderr, "Client %d dropped - Write error\n", client_no);
-		if (clear != 0) {
+fprintf (stderr, "Dropped: Client %d - Write error\n", client_no);
+		if (clear == CLEAR) {
+			if (clientarray[client_no].joined != 0) {
+				numplayers--;
+			}
 			FD_CLR (socket, &total_set);
 			clear_clientinfo(client_no);
 		}
 	}
-	memset(buf, 0, BUFSIZE);
+	memset(buf, '\0', BUFSIZE);
 }
 
 
@@ -780,8 +856,8 @@ void clear_clientinfo(int client_no)
 	clientarray[client_no].used = 0;
 	clientarray[client_no].joined = 0;
 	clientarray[client_no].socket = -1;
-	memset(clientarray[client_no].name, 0, NAMESIZE);
-	memset(clientarray[client_no].clibuf, 0, BUFSIZE);
+	memset(clientarray[client_no].name, '\0', NAMESIZE);
+	memset(clientarray[client_no].clibuf, '\0', BUFSIZE);
 	clientarray[client_no].charcount = 0;
 	clientarray[client_no].strikes = 0;
 	clientarray[client_no].resync = 0;
