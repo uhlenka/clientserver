@@ -116,23 +116,17 @@ char *argv[];
 			}
 			write(sd, &buf, strlen(buf)*sizeof(char));
 			memset(buf, 0, 1000);
+			time++;
 		}
-		else if (time == 1) {
-			sprintf(buf, "(cjoin)");
-			write(sd, &buf, strlen(buf)*sizeof(char));
-			memset(buf, 0, 1000);
-		}
-		read_set = total_set;
 		
+		read_set = total_set;
 		if (select (FD_SETSIZE, &read_set, NULL, NULL, NULL) < 0) {
 			perror ("select");
 			exit (1);
 		}
 		if (FD_ISSET (STDIN_FILENO, &read_set)) {
 			int n = read(STDIN_FILENO, buf, 1000);
-//fprintf(stderr, "Input: %s\n", buf); fflush(NULL);
-//FD_CLR (STDIN_FILENO, &read_set);
-			if (strcmp(buf, "\n") != 0 && strcmp(buf, "\r\n") != 0) {
+			if (strncmp(buf, "\n", 1 && strncmp(buf, "\r", 1) != 0) != 0) {
 				write(sd, &buf, n);
 			}
 		}
@@ -148,7 +142,6 @@ char *argv[];
 			}
 		}
 		memset(buf, 0, 1000);
-		time++;
 	}
 	
 	/* Terminate the client program gracefully. */
