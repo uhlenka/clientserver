@@ -1,15 +1,15 @@
 /* chatserver.c - code for server program that allows clients to chat with one another */
-#ifndef unix
+/*#ifndef unix
 #define WIN32
 #include <windows.h>
 #include <winsock.h>
-#else
+#else*/
 #define closesocket close
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
-#endif
+//#endif
 
 #include <stdio.h>
 #include <string.h>
@@ -22,8 +22,8 @@
 #define PROTOPORT 36724 /* default protocol port number */
 #define QLEN 30 /* size of request queue */
 #define MAXCLIENTS 4 /* maximum allowable number of clients */
-#define BUFSIZE 500 /* server's maximum buffer size */
-#define MAXMESSAGE 425 /* length of maximum allowable message */
+#define BUFSIZE 481  /* server's maximum buffer size */
+#define MAXMESSAGE 480 /* length of maximum allowable message */
 #define NAMESIZE 12 /* maximum client name length */
 #define CHATSIZE 80 /* maximum chat message length */
 
@@ -31,7 +31,10 @@
 #define NOCLEAR 0 /* indicators for whether a client's info should be cleared on write error */
 
 
-// TODO: respond to & test cchat, command line args, finish name algo (optional)
+// TODO: send malformed strike for cchat to nonexistent or duplicate client(s), help parameter for client, auto cjoin from client,
+	// auto sstat to all when client joins or is dropped, truncate chat messages before stripping illegal chars, strip illegal
+	// chars (left parens) from chat messages, send malformed strike for cchat or cstat before cjoin, send malformed strike for 
+	// cjoin after being assigned a name, implement name algorithm
 // don't forget to set MAXCLIENTS to 30
 
 
@@ -71,6 +74,7 @@ fd_set total_set, read_set; /* fd_sets to use with select */
 char buf[BUFSIZE]; /* buffer for sending and receiving messages */
 int minplayers = 2; /* minimum number of players needed to start a game */
 int lobbytime = 10; /* number of seconds until game begins if numplayers >= minplayers */
+int timeout = 10; /* number of seconds a player has to make a move */
 char listbuf[MAXMESSAGE]; /* buffer for building player list */
 
 	
@@ -114,10 +118,10 @@ int main(int argc, char **argv)
 	
 	srand(time(NULL));
 	
-	#ifdef WIN32
+	/*#ifdef WIN32
 	WSADATA wsaData;
 	WSAStartup(0x0101, &wsaData);
-	#endif
+	#endif*/
 	
 	memset(buf, '\0', BUFSIZE); /* clear read/write buffer */
 	memset(listbuf, '\0', MAXMESSAGE); /* clear player list buffer */
@@ -692,7 +696,7 @@ static void send_chat(char **message, char **recipients, int client_no)
 
 	int i;
 
-	if (strcmp("any", namestart) == 0) {
+	if (strcmp("ANY", namestart) == 0) {
 		if (numplayers > 1) {
 			if (numplayers == 2) {
 //fprintf(stderr, "2 players - sending to other one\n");
@@ -721,7 +725,7 @@ static void send_chat(char **message, char **recipients, int client_no)
 		}
 		return;
 	}
-	else if (strcmp("all", namestart) == 0) {
+	else if (strcmp("ALL", namestart) == 0) {
 //fprintf(stderr, "broadcast message\n");
 		for (i=0; i<MAXCLIENTS; i++) {
 			if (clientarray[i].joined != 0) {
@@ -863,7 +867,7 @@ static void assign_name(char **name, int client_no)
 	clientarray[client_no].joined = 1;
 	numplayers++;
 	build_player_list();
-	sprintf(buf, "(sjoin(%s)(%s)(%d,%d))", clientarray[client_no].name, listbuf, minplayers, lobbytime);
+	sprintf(buf, "(sjoin(%s)(%s)(%d,%d,%d))", clientarray[client_no].name, listbuf, minplayers, lobbytime, timeout);
 	memset(listbuf, '\0', MAXMESSAGE);
 	write_to_client(clientarray[client_no].socket, client_no, CLEAR);
 }
