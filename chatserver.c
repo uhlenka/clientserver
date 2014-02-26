@@ -1,16 +1,9 @@
 /* chatserver.c - code for server program that allows clients to chat with one another */
-/*#ifndef unix
-#define WIN32
-#include <windows.h>
-#include <winsock.h>
-#else*/
 #define closesocket close
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
-//#endif
-
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -19,22 +12,20 @@
 #include <strings.h>
 #include <signal.h>
 #include <time.h>
+#include <ctype.h>
 
 #define PROTOPORT 36724 /* default protocol port number */
 #define QLEN 30 /* size of request queue */
-#define MAXCLIENTS 3 /* maximum allowable number of clients */
+#define MAXCLIENTS 30 /* maximum allowable number of clients */
 #define BUFSIZE 481  /* server's maximum buffer size */
 #define MAXMESSAGE 480 /* length of maximum allowable message */
-#define NAMESIZE 12 /* maximum client name length */
+#define NAMESIZE 12 /* length of maximum allowable name */
+#define BODYSIZE 8 /* length of maximum name body */
+#define SUFFIXSIZE 3 /* length of maximum name suffix */
 #define CHATSIZE 80 /* maximum chat message length */
 
 #define CLEAR 1
 #define NOCLEAR 0 /* indicators for whether a client's info should be cleared on write error */
-
-
-// TODO: truncate chat messages before stripping illegal chars, strip illegal chars (left parens) from chat messages, send malformed strike for cchat or cstat before cjoin, send malformed strike for cjoin after being assigned a name, implement name algorithm
-// don't forget to set MAXCLIENTS to 30
-
 
 /*------------------------------------------------------------------------
 * Program: chatserver
@@ -84,7 +75,8 @@ static void write_to_client(int socket, int client_no, int clear);
 static void read_from_client(int socket, int client_no);
 static void parse_message(int client_no);
 static void send_chat(char **message, char **recipients, int client_no);
-static int find_name_end(char **current);
+static int  find_name_end(char **current);
+static void convert_name(char **name);
 static void assign_name(char **name, int client_no);
 static void build_player_list();
 static int  find_right_paren(char **current, int *numchars);
@@ -117,11 +109,6 @@ int main(int argc, char **argv)
 	
 	srand(time(NULL));
 	
-	/*#ifdef WIN32
-	WSADATA wsaData;
-	WSAStartup(0x0101, &wsaData);
-	#endif*/
-	
 	memset(buf, '\0', BUFSIZE); /* clear read/write buffer */
 	memset(listbuf, '\0', MAXMESSAGE); /* clear player list buffer */
 	memset((char *)&sad,0,sizeof(sad)); /* clear sockaddr structure */
@@ -149,7 +136,7 @@ int main(int argc, char **argv)
 		exit(1);
 	}
 	
-	// lose the pesky "Address already in use" error message 
+	/* Eliminate "Address already in use" error message. */
 	int flag = 1;
 	if (setsockopt(listensocket,SOL_SOCKET,SO_REUSEADDR,&flag,sizeof(int)) == -1) { 
     	perror("setsockopt"); 
@@ -191,13 +178,11 @@ int main(int argc, char **argv)
 						if (clientarray[client_no].used == 0)
 						break;
 					}
-					if (client_no < MAXCLIENTS) { /*add new connection to clientarray */
+					if (client_no < MAXCLIENTS) { /* add new connection to clientarray */
 fprintf (stderr, "Accepted: Client %d\n", client_no);
 						FD_SET (tempsd, &total_set);
 						clientarray[client_no].used = 1;
 						clientarray[client_no].socket = tempsd;
-						//sprintf(buf, "You are client number %d.\n", client_no); //don't send anything here
-						//write_to_client(tempsd, client_no, CLEAR);
 					}
 					else { /* send no vacancy message and drop connection */
 fprintf (stderr, "Refused: Client %d\n", client_no);
@@ -236,7 +221,6 @@ fprintf (stderr, "Dropped: Client %d - died\n", client_no);
 						clear_clientinfo(client_no);
 					}
 					else { /* transfer data to client's buffer and attempt to parse message */
-						//fprintf (stderr, "Data available for client %d\n", client_no);
 						read_from_client(i, client_no);
                         memset(buf, '\0', BUFSIZE);
 						parse_message(client_no);
@@ -333,9 +317,10 @@ fprintf (stderr, "Message: '%s' from client %d\n", clientarray[client_no].clibuf
                             if (result == 0) {
                                 return;
                             }
-                            else if (result == -1) {
+                            else if (result == -1) { /* max message length exceeded - send strike and resynchronize */
                                 send_strike(client_no, 'l');
                                 if (clientarray[client_no].used != 0) {
+                                	clientarray[client_no].resync = 1;
                                     sprintf(clientarray[client_no].clibuf, "%s", tempbufp);
                                     clientarray[client_no].charcount = 0;
                                     parse_message(client_no);
@@ -349,9 +334,10 @@ fprintf (stderr, "Message: '%s' from client %d\n", clientarray[client_no].clibuf
                                 if (result == 0) {
                                     return;
                                 }
-                                else if (result == -1) {
+                                else if (result == -1) { /* max message length exceeded - send strike and resynchronize */
                                     send_strike(client_no, 'l');
                                     if (clientarray[client_no].used != 0) {
+                                    	clientarray[client_no].resync = 1;
                                         sprintf(clientarray[client_no].clibuf, "%s", tempbufp);
                                         clientarray[client_no].charcount = 0;
                                         parse_message(client_no);
@@ -363,6 +349,9 @@ fprintf (stderr, "Message: '%s' from client %d\n", clientarray[client_no].clibuf
 fprintf (stderr, "Cchat: client %d\n", client_no);
 									if (clientarray[client_no].joined != 0) {
 										send_chat(&message, &recipients, client_no);
+									}
+									else {
+										send_strike(client_no, 'm');
 									}
                                     tempbufp++;
                                     if (*tempbufp == '\0') {
@@ -466,9 +455,10 @@ fprintf (stderr, "Cchat: client %d\n", client_no);
                             if (result == 0) {
                                 return;
                             }
-                            else if (result == -1) {
+                            else if (result == -1) { /* max message length exceeded - send strike and resynchronize */
                                 send_strike(client_no, 'l');
                                 if (clientarray[client_no].used != 0) {
+                                	clientarray[client_no].resync = 1;
                                     sprintf(clientarray[client_no].clibuf, "%s", tempbufp);
                                     clientarray[client_no].charcount = 0;
                                     parse_message(client_no);
@@ -478,12 +468,13 @@ fprintf (stderr, "Cchat: client %d\n", client_no);
                             tempbufp++;
                             if (*tempbufp == ')') { /* proper cjoin - apply naming algorithm if necessary and assign name */
 fprintf (stderr, "Cjoin: client %d - ", client_no);
-                            	if (strlen(clientarray[client_no].name) == 0) {
+                            	if (clientarray[client_no].joined == 0) {
 fprintf (stderr, "new player\n");
                                 	assign_name(&name, client_no);
                                 }
                                 else {
 fprintf (stderr, "already joined\n");
+									send_strike(client_no, 'm');
                                 }
 fprintf (stderr, "Name: client %d: %s\n", client_no, clientarray[client_no].name);
                             	tempbufp++;
@@ -568,10 +559,15 @@ fprintf (stderr, "Name: client %d: %s\n", client_no, clientarray[client_no].name
                         tempbufp++;
                         if (*tempbufp == ')') { /* proper cstat - respond with list of players */
 fprintf (stderr, "Cstat: client %d\n", client_no);
-                            build_player_list();
-                            sprintf(buf, "(sstat(%s))", listbuf);
-                            memset(listbuf, '\0', MAXMESSAGE);
-                            write_to_client(clientarray[client_no].socket, client_no, CLEAR);
+							if (clientarray[client_no].joined != 0) {
+                            	build_player_list();
+                            	sprintf(buf, "(sstat(%s))", listbuf);
+                            	memset(listbuf, '\0', MAXMESSAGE);
+                            	write_to_client(clientarray[client_no].socket, client_no, CLEAR);
+                            }
+                            else {
+								send_strike(client_no, 'm');
+							}
                             tempbufp++;
                             if (*tempbufp == '\0') {
                                 memset(clientarray[client_no].clibuf, '\0', BUFSIZE);
@@ -691,61 +687,81 @@ static void send_chat(char **message, char **recipients, int client_no)
 	find_right_paren(&messageend, &zero);
 	*messageend = '\0';
 	
+	/* Truncate chat message. */
+	char short_message[CHATSIZE+1];
+	snprintf(short_message, CHATSIZE+1, "%s", *message);
+	
+	/* Strip any illegal characters from chat message. */
+	char *original = short_message;
+	char *stripped = original;
+	while (*original != '\0') {
+		if (*original != '(') {
+			*stripped = *original;
+			stripped++;
+		}
+		original++;
+	}
+	*stripped = '\0';
+	
 	char *namestart = *recipients;
 	char *nameend = namestart;
 	int result = find_name_end(&nameend);
 	*nameend = '\0';
+	
+	char convertedname[NAMESIZE+1];
+	char *cnameptr = convertedname;
+	sprintf(convertedname, "%s", namestart);
+	convert_name(&cnameptr);
 
 	int i;
 
-	if (strcasecmp("ANY", namestart) == 0) {
-		if (numplayers > 1) {
-			if (numplayers == 2) {
-//fprintf(stderr, "2 players - sending to other one\n");
-				for (i=0; i<MAXCLIENTS; i++) {
-					if (i != client_no && clientarray[i].joined != 0) {
-						snprintf(buf, CHATSIZE+1, "(schat(%s)(%s))", clientarray[client_no].name, *message);
-						write_to_client(clientarray[i].socket, i, CLEAR);
+	/* Check for "ANY" or "ALL" recipient. */
+	if (result == 0) {
+		if (strcasecmp("ANY", namestart) == 0) {
+			if (numplayers > 1) {
+				if (numplayers == 2) {
+					for (i=0; i<MAXCLIENTS; i++) {
+						if (i != client_no && clientarray[i].joined != 0) {
+							sprintf(buf, "(schat(%s)(%s))", clientarray[client_no].name, short_message);
+							write_to_client(clientarray[i].socket, i, CLEAR);
+						}
 					}
 				}
-			}
-			else {
-//fprintf(stderr, "more than 2 players - sending to random one\n");
-				int numhops = (rand() % (numplayers-1)) + 1;
-				int i = client_no;
-//fprintf(stderr, "numhops = %d\n", numhops);
-				while(numhops > 0) {
-					i = (i+1) % MAXCLIENTS;
-					if (clientarray[i].joined != 0) {
-						numhops--;
+				else {
+					int numhops = (rand() % (numplayers-1)) + 1;
+					int i = client_no;
+					while(numhops > 0) {
+						i = (i+1) % MAXCLIENTS;
+						if (clientarray[i].joined != 0) {
+							numhops--;
+						}
 					}
+					sprintf(buf, "(schat(%s)(%s))", clientarray[client_no].name, short_message);
+					write_to_client(clientarray[i].socket, i, CLEAR);
 				}
-//fprintf(stderr, "selected client %d\n", i);
-				snprintf(buf, CHATSIZE+1, "(schat(%s)(%s))", clientarray[client_no].name, *message);
-				write_to_client(clientarray[i].socket, i, CLEAR);
 			}
+			return;
 		}
-		return;
-	}
-	else if (strcasecmp("ALL", namestart) == 0) {
-//fprintf(stderr, "broadcast message\n");
-		for (i=0; i<MAXCLIENTS; i++) {
-			if (clientarray[i].joined != 0) {
-				snprintf(buf, CHATSIZE+1, "(schat(%s)(%s))", clientarray[client_no].name, *message);
-				write_to_client(clientarray[i].socket, i, CLEAR);
+		else if (strcasecmp("ALL", namestart) == 0) {
+			for (i=0; i<MAXCLIENTS; i++) {
+				if (clientarray[i].joined != 0) {
+					sprintf(buf, "(schat(%s)(%s))", clientarray[client_no].name, short_message);
+					write_to_client(clientarray[i].socket, i, CLEAR);
+				}
 			}
+			return;
 		}
-		return;
 	}
 	
+	/* Send message to all valid recipients. */
 	int namefound, strikesent;
 	while (result != 0) {
 		namefound = 0;
 		for (i=0; i<MAXCLIENTS; i++) {
-			if (strcmp(clientarray[i].name, namestart) == 0) {
+			if (strcmp(clientarray[i].name, cnameptr) == 0) {
 				namefound = 1;
 				if (clientarray[i].sent == 0) {
-					snprintf(buf, CHATSIZE+1, "(schat(%s)(%s))", clientarray[client_no].name, *message);
+					sprintf(buf, "(schat(%s)(%s))", clientarray[client_no].name, short_message);
 					write_to_client(clientarray[i].socket, i, CLEAR);
 					clientarray[i].sent = 1;
 				}
@@ -763,13 +779,16 @@ static void send_chat(char **message, char **recipients, int client_no)
 		namestart = nameend;
 		result = find_name_end(&nameend);
 		*nameend = '\0';
+		memset(convertedname, '\0', NAMESIZE+1);
+		sprintf(convertedname, "%s", namestart);
+		convert_name(&cnameptr);
 	}
 	namefound = 0;
 	for (i=0; i<MAXCLIENTS; i++) {
-		if (strcmp(clientarray[i].name, namestart) == 0) {
+		if (strcmp(clientarray[i].name, cnameptr) == 0) {
 			namefound = 1;
 			if (clientarray[i].sent == 0) {
-				snprintf(buf, CHATSIZE+1, "(schat(%s)(%s))", clientarray[client_no].name, *message);
+				sprintf(buf, "(schat(%s)(%s))", clientarray[client_no].name, short_message);
 				write_to_client(clientarray[i].socket, i, CLEAR);
 				clientarray[i].sent = 1;
 			}
@@ -784,6 +803,7 @@ static void send_chat(char **message, char **recipients, int client_no)
 		strikesent = 1;
 	}
 	
+	/* Reset 'sent' flag for all players. */
 	for (i=0; i<MAXCLIENTS; i++) {
 		clientarray[i].sent = 0;
 	}
@@ -812,14 +832,13 @@ static int find_name_end(char **current)
 
 
 
-
-
-static void assign_name(char **name, int client_no)
+static void convert_name(char **name)
 {
 	char *namepos = *name;
-	char temp[232];
+	char temp[480];
 	char *temppos = temp;
 	
+	/* Copy name into temp string. */
 	while (*namepos != ')') {
 		if (*namepos != ' ') {
 			*temppos = *namepos;
@@ -828,18 +847,173 @@ static void assign_name(char **name, int client_no)
 		namepos++;
 	}
 	*temppos = '\0';
+
+	/* Remove any illegal characters (non-alphanumeric/dot). */
+	temppos = temp;
+	char *copy = temppos;
+	while (*temppos != '\0') {
+		if (isalnum(*temppos) != 0 || *temppos == '.') {
+			*copy = *temppos;
+			copy++;
+		}
+		temppos++;
+	}
+	*copy = '\0';
 	
-	int length = strlen(temp);
-	if (length == 0) { /* zero length name - assign ~# */
+	/* Remove leading and trailing periods. */
+	temppos = temp;
+	copy = temppos;
+	int removing = 1;
+	while (*temppos != '\0') {
+		if (*temppos != '.') {
+			*copy = *temppos;
+			copy++;
+			removing = 0;
+		}
+		else if (removing == 0) {
+			*copy = *temppos;
+			copy++;
+		}
+		temppos++;
+	}
+	*copy = '\0';
+	copy--;
+	while (copy != temp) {
+		if (*copy != '.') {
+			break;
+		}
+		copy--;
+	}
+	copy++;
+	*copy = '\0';
+	
+	/* Remove all but last dot. */
+	int num_dots = 0;
+	temppos = temp;
+	while (*temppos != '\0') {
+		if (*temppos == '.') {
+			num_dots++;
+		}
+		temppos++;
+	}
+	char *last_dot;
+	if (num_dots > 0) {
+		char extension[480];
+		while (*copy != '.') {
+			copy--;
+		}
+		last_dot = copy;
+		sprintf(extension, "%s", last_dot);
+		temppos = temp;
+		copy = temppos;
+		while (temppos != last_dot) {
+			if (*temppos != '.') {
+				*copy = *temppos;
+				copy++;
+			}
+			temppos++;
+		}
+		*copy = '\0';
+		strcat(temp, extension);
+		for (last_dot = temp; *last_dot != '.'; last_dot++);
+	}
+	
+	/* Convert name to uppercase. */
+	temppos = temp;
+	while (*temppos != '\0') {
+		*temppos = toupper(*temppos);
+		++temppos;
+	}
+	
+	/* Truncate name before dot to 8 characters, and name after dot to 3 characters. */
+	char short_name[13];
+	if (num_dots > 0) {
+		*last_dot = '\0';
+		snprintf(short_name, BODYSIZE+1, "%s", temp);
+		*last_dot = '.';
+		strncat(short_name, last_dot, SUFFIXSIZE+1);
+		sprintf(temp, "%s", short_name);
+		last_dot = temp;
+		while (*last_dot != '.') {
+			last_dot++;
+		}
+	}
+	else {
+		snprintf(short_name, BODYSIZE+1, "%s", temp);
+		sprintf(temp, "%s", short_name);
+	}
+	
+	/* Place converted name into destination string. */
+	sprintf(*name, "%s", temp);
+}
+
+
+
+
+
+
+static void assign_name(char **name, int client_no)
+{
+	char temp[480];
+	char *temppos = temp;
+	sprintf(temp, "%s", *name);
+	convert_name(&temppos);
+	
+	/* Send strike if name is empty. */
+	if (strlen(temp) == 0) { /* zero length name - send strike */
+		send_strike(client_no, 'm');
+		return;
+	}
+	
+	/* Send strike if name is a reserved word. */
+	if (strcmp("ALL", temp) == 0 || strcmp("ANY", temp) == 0) {
+		send_strike(client_no, 'm');
+		return;
+	}
+
+	/* Check for matches. */
+	int i, j, match = 0;
+	for (i=0; i<MAXCLIENTS; i++) {
+		if (strcmp(clientarray[i].name, temp) == 0) {
+			match = 1;
+			break;
+		}
+	}
+	if (match == 0) { /* no matches - assign name */
+		sprintf(clientarray[client_no].name, "%s", temp);
+	}
+	else { /* match found - assign first unmatched alternative */
+		char tentative[NAMESIZE+1];
+		char number[5];
 		int offset = 1;
-		int i, j, match;
-		char number[3];
+		int num_dots = 0;
+		while (*temppos != '\0') {
+			if (*temppos == '.') {
+				num_dots = 1;
+				break;
+			}
+			temppos++;
+		}
 		for (j=1; j<31; j++) {
-			memset(number, '\0', 4);
+			memset(tentative, '\0', NAMESIZE+1);
+			memset(number, '\0', 5);
+			if (j < 10) {
+				snprintf(tentative, BODYSIZE-1, "%s", temp);
+			}
+			else if (j < 100) {
+				snprintf(tentative, BODYSIZE-2, "%s", temp);
+			}
+			else {
+				snprintf(tentative, BODYSIZE-3, "%s", temp);
+			}
 			sprintf(number, "~%d", j);
+			strcat(tentative, number);
+			if (num_dots > 0) {
+				strcat(tentative, temppos);
+			}
 			for (i=0; i<MAXCLIENTS; i++) {
 				match = 0;
-				if (strcmp(clientarray[i].name, number) == 0) {
+				if (strcmp(clientarray[i].name, tentative) == 0) {
 					match = 1;
 					offset++;
 					break;
@@ -849,51 +1023,7 @@ static void assign_name(char **name, int client_no)
 				break;
 			}
 		}
-		sprintf(clientarray[client_no].name, "~%d", offset);
-	}
-	else {
-		if (length > NAMESIZE) { /* too long - truncate */
-			temp[12] = '\0';
-		}
-		int i, j, match = 0;
-		for (i=0; i<MAXCLIENTS; i++) { /* check for matches */
-			if (strcmp(clientarray[i].name, temp) == 0) {
-				match = 1;
-				break;
-			}
-		}
-		if (match == 0) { /* no matches - assign name */
-			sprintf(clientarray[client_no].name, "%s", temp);
-		}
-		else { /* match found - assign first unmatched alternative */
-			char tentative[12];
-			char number[3];
-			int offset = 1;
-			for (j=1; j<31; j++) {
-				memset(tentative, '\0', 13);
-				memset(number, '\0', 4);
-				if (j < 10) {
-					snprintf(tentative, 11, "%s", temp);
-				}
-				else {
-					snprintf(tentative, 10, "%s", temp);
-				}
-				sprintf(number, "~%d", j);
-				strcat(tentative, number);
-				for (i=0; i<MAXCLIENTS; i++) {
-					match = 0;
-					if (strcmp(clientarray[i].name, tentative) == 0) {
-						match = 1;
-						offset++;
-						break;
-					}
-				}
-				if (match == 0) {
-					break;
-				}
-			}
-			sprintf(clientarray[client_no].name, "%s", tentative);
-		}
+		sprintf(clientarray[client_no].name, "%s", tentative);
 	}
 
 	/* update player information, send sjoin to new player and sstat to all others */
@@ -902,10 +1032,9 @@ static void assign_name(char **name, int client_no)
 	build_player_list();
 	sprintf(buf, "(sjoin(%s)(%s)(%d,%d,%d))", clientarray[client_no].name, listbuf, minplayers, lobbytime, timeout);
 	write_to_client(clientarray[client_no].socket, client_no, CLEAR);
-	int i;
 	for (i=0; i<MAXCLIENTS; i++) {
 		if (clientarray[i].joined == 1 && i != client_no) {
-			sprintf(buf, "(stat(%s))", listbuf);
+			sprintf(buf, "(sstat(%s))", listbuf);
 			write_to_client(clientarray[i].socket, i, CLEAR);
 		}
 	}
@@ -981,20 +1110,20 @@ void send_strike(int client_no, char reason)
 {
     clientarray[client_no].strikes += 1;
     
-    if (reason == 'm') {
+    if (reason == 'm') { /* send 'malformed' strike */
         sprintf(buf, "(strike(%d)(malformed))", clientarray[client_no].strikes);
         clientarray[client_no].resync = 1;
         clientarray[client_no].charcount = 0;
     }
-    else if (reason == 'b') {
+    else if (reason == 'b') { /* send 'badint' strike */
         sprintf(buf, "(strike(%d)(badint))", clientarray[client_no].strikes);
         clientarray[client_no].resync = 1;
         clientarray[client_no].charcount = 0;
     }
-    else if (reason == 't') {
+    else if (reason == 't') { /* send 'timeout' strike */
         sprintf(buf, "(strike(%d)(timeout))", clientarray[client_no].strikes);
     }
-    else if (reason == 'l') {
+    else if (reason == 'l') { /* send 'toolong' strike */
         sprintf(buf, "(strike(%d)(toolong))", clientarray[client_no].strikes);
         clientarray[client_no].resync = 1;
         clientarray[client_no].charcount = 0;
@@ -1002,10 +1131,10 @@ void send_strike(int client_no, char reason)
     write_to_client(clientarray[client_no].socket, client_no, CLEAR);
 fprintf(stderr, "Strike: %d to client %d\n", clientarray[client_no].strikes, client_no);
     
-    if (clientarray[client_no].used != 0 && clientarray[client_no].strikes == 3) {
+    if (clientarray[client_no].used != 0 && clientarray[client_no].strikes == 3) { /* 3rd strike - drop client connection */
         closesocket(clientarray[client_no].socket);
 fprintf (stderr, "Dropped: Client %d - 3 strikes\n", client_no);
-        if (clientarray[client_no].joined != 0) {
+        if (clientarray[client_no].joined != 0) { /* client had a name - send sstat to all players */
 				numplayers--;
 				clientarray[client_no].joined = 0;
 				build_player_list();
@@ -1064,7 +1193,7 @@ void clear_clientinfo(int client_no)
 	clientarray[client_no].joined = 0;
 	clientarray[client_no].sent = 0;
 	clientarray[client_no].socket = -1;
-	memset(clientarray[client_no].name, '\0', NAMESIZE);
+	memset(clientarray[client_no].name, '\0', NAMESIZE+1);
 	memset(clientarray[client_no].clibuf, '\0', BUFSIZE);
 	clientarray[client_no].charcount = 0;
 	clientarray[client_no].strikes = 0;
@@ -1082,7 +1211,7 @@ void initialize_clientinfo(int client_no)
 	clientarray[client_no].joined = 0;
 	clientarray[client_no].sent = 0;
 	clientarray[client_no].socket = -1;
-	clientarray[client_no].name = malloc(NAMESIZE*sizeof(char));
+	clientarray[client_no].name = malloc((NAMESIZE+1)*sizeof(char));
 	clientarray[client_no].clibuf = malloc(BUFSIZE*sizeof(char));
 	clientarray[client_no].charcount = 0;
 	clientarray[client_no].strikes = 0;
