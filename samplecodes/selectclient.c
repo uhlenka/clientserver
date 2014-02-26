@@ -30,14 +30,18 @@ char uhlenka[] = "UHLENKA"; /* default client name */
 *
 * Purpose: allocate a socket, connect to a server, and print all output
 *
-* Syntax: client [-s server] [-p port] [-n name] [-m]
+* Syntax: client [-h] [-s server] [-p port] [-n name] [-m]
 *
-* host - name of a computer on which server is executing
-* port - protocol port number server is using
+* -h 	  the client will print a description of its parameters and then exit
+* server  IP address or name of a computer on which server is executing
+* port 	  protocol port number server is using
+* name 	  the name the client will attempt to use in the game
+* -m 	  the client will run in manual mode
 *
-* Note: Both arguments are optional. If no host name is specified,
-* the client uses "localhost"; if no protocol port is
-* specified, the client uses the default given by PROTOPORT.
+* All arguments are optional. The defualt values are as follows:
+* 	server = "localhost"
+* 	port = 36724
+* 	name = "UHLENKA"
 *
 *------------------------------------------------------------------------
 */
@@ -71,6 +75,7 @@ char *argv[];
 	memset((char *)&sad,0,sizeof(sad)); /* clear sockaddr structure */
 	sad.sin_family = AF_INET; /* set family to Internet */
     
+    /* Get values from command line. */
     int i;
     for (i=1;i<argc;i++) {
         if (server == NULL && strcmp(argv[i], "-s") == 0 && (i+1) < argc) {
@@ -84,6 +89,10 @@ char *argv[];
         }
         else if (manual == 0 && strcmp(argv[i], "-m") == 0) {
             manual = 1;
+        }
+        else if (manual == 0 && strcmp(argv[i], "-h") == 0) {
+            fprintf(stderr, "This client implements the following (optional) command line parameters:\n-h 	    the client will print a description of its parameters and then exit\n-s server   server = IP address or name of a computer on which server is executing (default: \"localhost\")\n-p port     port = protocol port number server is using (default: 36724)\n-n name     name = the name the client will attempt to use in the game (default: \"UHLENKA\")\n-m 	    the client will run in manual mode\n");
+            exit(0);
         }
     }
     if (server == NULL) {
@@ -135,28 +144,26 @@ char *argv[];
 	int time = 0;
 	
 	while (1) {
+		if (time == 0) {
+            sprintf(buf, "(cjoin(%s))", name);
+            write(sd, &buf, strlen(buf)*sizeof(char));
+            memset(buf, 0, 1000);
+            time++;
+        }
         if (manual == 0) {
-            if (time == 0) {
-                sprintf(buf, "(cjoin(%s))", name);
-                write(sd, &buf, strlen(buf)*sizeof(char));
-                memset(buf, 0, 1000);
-                time++;
+            int n = recv(sd, buf, sizeof(buf), 0);
+            if (n == 0) {
+                closesocket(i);
+                fprintf (stderr, "Connection dropped\n");
+                exit(0);
             }
             else {
-                int n = recv(sd, buf, sizeof(buf), 0);
-                if (n == 0) {
-                    closesocket(i);
-                    fprintf (stderr, "Connection dropped\n");
-                    exit(0);
-                }
-                else {
-                    write(1,buf,n); write(1, "\n", sizeof(char));
-                }
-                sleep(2);
-                sprintf(buf, "(cchat(any)(hello))");
-                write(sd, &buf, strlen(buf)*sizeof(char));
-                memset(buf, 0, 1000);
+                write(1,buf,n); write(1, "\n", sizeof(char));
             }
+            sleep(2);
+            sprintf(buf, "(cchat(any)(hello))");
+            write(sd, &buf, strlen(buf)*sizeof(char));
+            memset(buf, 0, 1000);
 		}
         else {
             read_set = total_set;
