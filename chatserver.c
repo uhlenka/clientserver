@@ -4,6 +4,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -62,9 +63,9 @@ clientinfo clientarray[MAXCLIENTS]; /* structure to hold client info */
 int numplayers = 0; /* total number of players that have joined */
 fd_set total_set, read_set; /* fd_sets to use with select */
 char buf[BUFSIZE]; /* buffer for sending and receiving messages */
-int minplayers = 2; /* minimum number of players needed to start a game */
+int minplayers = 3; /* minimum number of players needed to start a game */
 int lobbytime = 10; /* number of seconds until game begins if numplayers >= minplayers */
-int timeout = 10; /* number of seconds a player has to make a move */
+int timeout = 30; /* number of seconds a player has to make a move */
 char listbuf[MAXMESSAGE]; /* buffer for building player list */
 
 	
@@ -91,7 +92,7 @@ int main(int argc, char **argv)
 {
 	signal(SIGPIPE, SIG_IGN);
 
-	struct hostent *ptrh; /* pointer to a host table entry */
+	//struct hostent *ptrh; /* pointer to a host table entry */
 	struct protoent *ptrp; /* pointer to a protocol table entry */
 	struct sockaddr_in sad; /* structure to hold server's address */
 	struct sockaddr_in cad; /* structure to hold client address */
