@@ -58,17 +58,32 @@ typedef struct {
 		int charcount;
 		int strikes;
 		int resync;
+		int plangiven;
+		int offers;
 	} clientinfo;
 clientinfo clientarray[MAXCLIENTS]; /* structure to hold client info */
 int numplayers = 0; /* total number of players that have joined */
 fd_set total_set, read_set; /* fd_sets to use with select */
 char buf[BUFSIZE]; /* buffer for sending and receiving messages */
-int minplayers = 3; /* minimum number of players needed to start a game */
-int lobbytime = 10; /* number of seconds until game begins if numplayers >= minplayers */
-int timeout = 30; /* number of seconds a player has to make a move */
+int minplayers = 3; /* minimum number of players needed to start a game - default 3 */
+int lobbytime = 10; /* number of seconds until game begins if numplayers >= minplayers - default 10 */
+int timeout = 30; /* number of seconds a player has to make a move - default 30 */
 char listbuf[MAXMESSAGE]; /* buffer for building player list */
 
 int attackgrid[MAXCLIENTS,MAXCLIENTS] = {0}; /* 2-d array for keeping track of attack info */
+int round, phase; /* variables for keeping track of where we are in the game */
+
+/*
+   Phase 1 - send out plan requests and receive plan responses
+   Phase 2 - send out offers and receive offer responses
+   Phase 3 - send out action requests and receive action responses,
+   			 send out notify messages,
+   			 battle,
+   			 send out sstats
+/*
+
+// TODO: modify sstat to include troop sizes, implement -m -l -t command line parameters,
+//       add -f command line parameter for starting troop size, implement badint strike for too large numbers
 
 	
 /* helper functions */
@@ -1201,6 +1216,8 @@ void clear_clientinfo(int client_no)
 	clientarray[client_no].charcount = 0;
 	clientarray[client_no].strikes = 0;
 	clientarray[client_no].resync = 0;
+	clientarray[client_no].plangiven = 0;
+	clientarray[client_no].offers = 0;
 }
 
 
@@ -1219,4 +1236,6 @@ void initialize_clientinfo(int client_no)
 	clientarray[client_no].charcount = 0;
 	clientarray[client_no].strikes = 0;
 	clientarray[client_no].resync = 0;
+	clientarray[client_no].plangiven = 0;
+	clientarray[client_no].offers = 0;
 }
