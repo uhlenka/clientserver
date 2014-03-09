@@ -840,7 +840,7 @@ static void convert_name(char **name)
 	char *temppos = temp;
 	
 	/* Copy name into temp string. */
-	while (*namepos != ')') {
+	while (*namepos != ')' && *namepos != '\0') {
 		if (*namepos != ' ') {
 			*temppos = *namepos;
 			temppos++;
