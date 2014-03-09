@@ -51,6 +51,7 @@
 typedef struct {
 		int used;
 		int joined;
+        int playing;
 		int sent;
 		char *name;
 		int socket;
@@ -58,20 +59,23 @@ typedef struct {
 		int charcount;
 		int strikes;
 		int resync;
+        int troops;
 		int plangiven;
 		int offers;
 	} clientinfo;
 clientinfo clientarray[MAXCLIENTS]; /* structure to hold client info */
-int numplayers = 0; /* total number of players that have joined */
+int numusers = 0; /* total number of players that have joined */
 fd_set total_set, read_set; /* fd_sets to use with select */
 char buf[BUFSIZE]; /* buffer for sending and receiving messages */
 int minplayers = 3; /* minimum number of players needed to start a game - default 3 */
-int lobbytime = 10; /* number of seconds until game begins if numplayers >= minplayers - default 10 */
+int lobbytime = 10; /* number of seconds until game begins if numusers >= minplayers - default 10 */
 int timeout = 30; /* number of seconds a player has to make a move - default 30 */
 char listbuf[MAXMESSAGE]; /* buffer for building player list */
 
-int attackgrid[MAXCLIENTS,MAXCLIENTS] = {0}; /* 2-d array for keeping track of attack info */
-int round, phase; /* variables for keeping track of where we are in the game */
+int attackgrid[MAXCLIENTS][MAXCLIENTS] = {{0}}; /* 2-d array for keeping track of attack info */
+int offergrid[MAXCLIENTS][MAXCLIENTS] = {{0}}; /* 2-d array for keeping track of offer info */
+int roundnum = 1; int phase = 0; /* variables for keeping track of where we are in the game */
+int waitingfor, responseto; /* variables for keeping track of what message the server is waiting for */
 
 /*
    Phase 1 - send out plan requests and receive plan responses
@@ -80,7 +84,7 @@ int round, phase; /* variables for keeping track of where we are in the game */
    			 send out notify messages,
    			 battle,
    			 send out sstats
-/*
+*/
 
 // TODO: modify sstat to include troop sizes, implement -m -l -t command line parameters,
 //       add -f command line parameter for starting troop size, implement badint strike for too large numbers
@@ -179,7 +183,8 @@ int main(int argc, char **argv)
 	/* Main server loop */
 	while (1) {
 		read_set = total_set;
-		if (select (FD_SETSIZE, &read_set, NULL, NULL, NULL) < 0) {
+        //check timeout here?
+		if (select (FD_SETSIZE, &read_set, NULL, NULL, &timeout) < 0) {
 			perror ("select");
 			exit (1);
 		}		
@@ -223,7 +228,7 @@ fprintf (stderr, "Error: recv on client %d\n", client_no);
 						closesocket(i);
 fprintf (stderr, "Dropped: Client %d - died\n", client_no);
 						if (clientarray[client_no].joined != 0) {
-							numplayers--;
+							numusers--;
 							clientarray[client_no].joined = 0;
 							build_player_list();
 							int i;
@@ -247,6 +252,40 @@ fprintf (stderr, "Dropped: Client %d - died\n", client_no);
 				}
 			}
 		}
+        //game implementation goes here
+        //if phase == 0, we are in the lobby
+            //if numusers < minplayers, ignore
+            //else if timer is not set, start it
+            //else if timer is set and expired, set all joined users' playing status to 1 and enter phase 1
+        //else if phase == 1, we are in the planning phase
+            //for each player (use waitingfor to track this), send plan message and start timeout
+                //edit send_chat to detect SERVER messages and process them thusly:
+                    //if phase == 1 and sender matches waitingfor, add offer to offergrid and increment ally's offers (if applicable)
+                    //if message is malformed, strike and assume PASS
+                //if timer is set and expired, send player a strike and ??? (if no answer on Canvas, assume PASS)
+            //enter phase 2
+        //else if phase == 2, we are in the offer/response phase
+            //for each player (use waitingfor) and offer (use responseto), send offer message and start timeout
+                //add the following to SERVER message processing:
+                    //if phase == 2 and sender matches waitingfor and ally matches responseto, send response to ally
+                    //if message is malformed, strike and assume DECLINE and send to ally
+                //if timer is set and expired, send player a strike and ??? (if no answer on Canvas, assume DECLINE and send to ally)
+                //decrement player's offers
+            //enter phase 3
+        //else if phase == 3, we are in the action phase
+            //for each player (use waitingfor), send action message and start timeout
+                //add the following to SERVER message processing:
+                    //if phase == 3 and sender matches waitingfor, add action to offergrid (if applicable) and send notify to all joined users
+                    //if message is malformed, strike and assume PASS and send notify to all joined users
+                //if timer is set and expired, send player a strike and ??? (if no answer on Canvas, assume PASS and send notify to all joined users)
+            //implement battle algorithm
+                //if a player is killed off, update their playing status to -1 to indicate they cannot join until the current game is over
+            //send sstat to all joined users
+            //zero out offergrid and attackgrid
+            //if the number of players > 1:
+                //increment roundnum (if already at 99999, wrap back around to 1), add any newly joined users (playing == 0) to the game (and update their playing status to 1), enter phase 1
+            //else
+                //set roundnum to 1, set all joined users' playing status to 0, enter phase 0
 	}
 	
 	exit(0);
@@ -736,8 +775,8 @@ static void send_chat(char **message, char **recipients, int client_no)
 	/* Check for "ANY" or "ALL" recipient. */
 	if (result == 0) {
 		if (strcasecmp("ANY", namestart) == 0) {
-			if (numplayers > 1) {
-				if (numplayers == 2) {
+			if (numusers > 1) {
+				if (numusers == 2) {
 					for (i=0; i<MAXCLIENTS; i++) {
 						if (i != client_no && clientarray[i].joined != 0) {
 							sprintf(buf, "(schat(%s)(%s))", clientarray[client_no].name, short_message);
@@ -746,7 +785,7 @@ static void send_chat(char **message, char **recipients, int client_no)
 					}
 				}
 				else {
-					int numhops = (rand() % (numplayers-1)) + 1;
+					int numhops = (rand() % (numusers-1)) + 1;
 					int i = client_no;
 					while(numhops > 0) {
 						i = (i+1) % MAXCLIENTS;
@@ -857,7 +896,7 @@ static void convert_name(char **name)
 	char *temppos = temp;
 	
 	/* Copy name into temp string. */
-	while (*namepos != ')') {
+	while (*namepos != ')' && *namepos != '\0') {
 		if (*namepos != ' ') {
 			*temppos = *namepos;
 			temppos++;
@@ -1046,7 +1085,7 @@ static void assign_name(char **name, int client_no)
 
 	/* update player information, send sjoin to new player and sstat to all others */
 	clientarray[client_no].joined = 1;
-	numplayers++;
+	numusers++;
 	build_player_list();
 	sprintf(buf, "(sjoin(%s)(%s)(%d,%d,%d))", clientarray[client_no].name, listbuf, minplayers, lobbytime, timeout);
 	write_to_client(clientarray[client_no].socket, client_no, CLEAR);
@@ -1080,10 +1119,10 @@ static void build_player_list()
 			added++;
 		}
 	}
-	if (added == numplayers) {
+	if (added == numusers) {
 	}
 	else {
-fprintf(stderr, "Error: player list does not agree with numplayers\n");
+fprintf(stderr, "Error: user list does not agree with numusers\n");
 	}
 }
 
@@ -1153,7 +1192,7 @@ fprintf(stderr, "Strike: %d to client %d\n", clientarray[client_no].strikes, cli
         closesocket(clientarray[client_no].socket);
 fprintf (stderr, "Dropped: Client %d - 3 strikes\n", client_no);
         if (clientarray[client_no].joined != 0) { /* client had a name - send sstat to all players */
-				numplayers--;
+				numusers--;
 				clientarray[client_no].joined = 0;
 				build_player_list();
 				int i;
@@ -1181,7 +1220,7 @@ void write_to_client(int socket, int client_no, int clear)
 fprintf (stderr, "Dropped: Client %d - Write error\n", client_no);
 		if (clear == CLEAR) {
 			if (clientarray[client_no].joined != 0) {
-				numplayers--;
+				numusers--;
 				clientarray[client_no].joined = 0;
 				build_player_list();
 				int i;
@@ -1209,6 +1248,7 @@ void clear_clientinfo(int client_no)
 {
 	clientarray[client_no].used = 0;
 	clientarray[client_no].joined = 0;
+    clientarray[client_no].playing = 0;
 	clientarray[client_no].sent = 0;
 	clientarray[client_no].socket = -1;
 	memset(clientarray[client_no].name, '\0', NAMESIZE+1);
@@ -1216,6 +1256,7 @@ void clear_clientinfo(int client_no)
 	clientarray[client_no].charcount = 0;
 	clientarray[client_no].strikes = 0;
 	clientarray[client_no].resync = 0;
+    clientarray[client_no].troops = 0;
 	clientarray[client_no].plangiven = 0;
 	clientarray[client_no].offers = 0;
 }
@@ -1229,6 +1270,7 @@ void initialize_clientinfo(int client_no)
 {
 	clientarray[client_no].used = 0;
 	clientarray[client_no].joined = 0;
+    clientarray[client_no].playing = 0;
 	clientarray[client_no].sent = 0;
 	clientarray[client_no].socket = -1;
 	clientarray[client_no].name = malloc((NAMESIZE+1)*sizeof(char));
@@ -1236,6 +1278,7 @@ void initialize_clientinfo(int client_no)
 	clientarray[client_no].charcount = 0;
 	clientarray[client_no].strikes = 0;
 	clientarray[client_no].resync = 0;
+    clientarray[client_no].troops = 0;
 	clientarray[client_no].plangiven = 0;
 	clientarray[client_no].offers = 0;
 }
