@@ -1,4 +1,4 @@
-/* chatclient.c - code for client program that communicates with a chatserver */
+/* byzantiumc.c - code for client program that communicates with a chatserver */
 #define closesocket close
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -20,9 +20,9 @@ char localhost[] = "localhost"; /* default host name */
 char uhlenka[] = "UHLENKA"; /* default client name */
 
 /*------------------------------------------------------------------------
-* Program: chatclient
+* Program: byzantiumc
 *
-* Purpose: communicate with a chatserver
+* Purpose: communicate with a chatserver and play Byzantium
 *
 * Syntax: client [-h] [-s server] [-p port] [-n name] [-m]
 *
