@@ -90,6 +90,14 @@ typedef struct {
     } offerinfo;
 offerinfo offergrid[MAXCLIENTS][MAXCLIENTS] = {{{0}}}; /* 2-d array for keeping track of offer info */
 int attackgrid[MAXCLIENTS][MAXCLIENTS] = {{0}}; /* 2-d array for keeping track of attack info */
+int battlegrid[MAXCLIENTS][MAXCLIENTS] = {{0}}; /* 2-d array for keeping track of battle info */
+typedef struct {
+        int count;
+        int first;
+        int second;
+        int third;
+    } die;
+die a = {0}; die b = {0}; /* variables for keeping track of dice rolls during battles */
 int roundnum = 1; int phase = 0; /* variables for keeping track of where we are in the game */
 int waiting = 0; int waitingfor = -1; int responseto = -1; /* variables for keeping track of what message the server is waiting for */
 time_t timestart; /* struct for implementing timeouts */
@@ -115,6 +123,7 @@ static void build_user_list();
 static int  find_right_paren(char **current, int *numchars);
 static void send_strike(int client_no, char reason);
 static void do_battle();
+static void sort_rolls();
 
 
 
@@ -292,10 +301,6 @@ fprintf (stderr, "Dropped: Client %d - died\n", client_no);
 			}
 		}
         /* Game logic */
-            //timeout check code:
-                /* if (difftime(time(NULL), timestart) >= (double)timeout) {
-                    //do whatever you do when the timer expires
-                 } */
         if (phase == 0) { /* we are in the lobby */
             if (numusers >= minplayers) { /* check if minplayers has been met */
                 if (timerset != 0) { /* check if timer has been set */
@@ -326,7 +331,7 @@ fprintf (stderr, "Dropped: Client %d - died\n", client_no);
                 waitingfor = 0;
             }
             if (waitingfor < MAXCLIENTS) {
-                if (clientarray[waitingfor].playing != 0) {
+                if (clientarray[waitingfor].playing > 0) {
                     if (timerset == 0) {
                         /* Send PLAN message to waitingfor and start timer. */
                         sprintf(buf, "(schat(SERVER)(PLAN,%d))", roundnum);
@@ -344,7 +349,6 @@ fprintf (stderr, "Dropped: Client %d - died\n", client_no);
                     }
                 }
                 else { /* waitingfor is not playing - move to next client */
-//fprintf(stderr, "Client %d not playing\n", waitingfor);
                     waitingfor++;
                 }
             }
@@ -364,12 +368,11 @@ fprintf (stderr, "Dropped: Client %d - died\n", client_no);
             }
             if (waitingfor < MAXCLIENTS) {
                 if (responseto < MAXCLIENTS) {
-                    if (clientarray[waitingfor].playing != 0) { /* check if waitingfor is playing */
+                    if (clientarray[waitingfor].playing > 0) { /* check if waitingfor is playing */
                         if (offergrid[waitingfor][responseto].used != 0) { /* check if waitingfor has an offer from responseto */
                             if (timerset == 0) {
                                 /* Send OFFER message to waitingfor, decrement waitingfor's offers, and start timer. */
                                 if (clientarray[waitingfor].offers > 1) {
-fprintf(stderr, "Client %d has more than 1 offer\n", waitingfor);
                                     //send offer with OFFER message
                                     clientarray[waitingfor].offersent = 1;
                                     int target = offergrid[waitingfor][responseto].target;
@@ -378,7 +381,6 @@ fprintf(stderr, "Client %d has more than 1 offer\n", waitingfor);
                                     clientarray[waitingfor].offers -= 1;
                                 }
                                 else if (clientarray[waitingfor].offers == 1) {
-fprintf(stderr, "Client %d has one 1 offer\n", waitingfor);
                                     //send last offer with OFFERL message
                                     clientarray[waitingfor].offersent = 1;
                                     int target = offergrid[waitingfor][responseto].target;
@@ -404,12 +406,10 @@ fprintf(stderr, "Client %d has one 1 offer\n", waitingfor);
                             waitingfor++;
                         }
                         else { /* no offer from responseto - move to next offer */
-//fprintf(stderr, "No offer from %d\n", responseto);
                             responseto++;
                         }
                     }
                     else { /* waitingfor is not playing - move to next client */
-//fprintf(stderr, "Client %d not playing\n", waitingfor);
                         waitingfor++;
                     }
                 }
@@ -427,15 +427,11 @@ fprintf(stderr, "Client %d has one 1 offer\n", waitingfor);
             }
         }
         else if (phase == 3) { /* we are in the action phase */
-            //for each player (use waitingfor), send action message and start timeout
-                //if timer is set and expired, send player a strike and assume PASS
-            //implement battle algorithm
-                //if a player is killed off, update their playing status to -1 to indicate they cannot join until the current game is over
             if (waitingfor < 0) {
                 waitingfor = 0;
             }
             if (waitingfor < MAXCLIENTS) {
-                if (clientarray[waitingfor].playing != 0) {
+                if (clientarray[waitingfor].playing > 0) {
                     if (timerset == 0) {
                         /* Send ACTION message to waitingfor and start timer. */
                         sprintf(buf, "(schat(SERVER)(ACTION,%d))", roundnum);
@@ -453,7 +449,6 @@ fprintf(stderr, "Client %d has one 1 offer\n", waitingfor);
                     }
                 }
                 else { /* waitingfor is not playing - move to next client */
-//fprintf(stderr, "Client %d not playing\n", waitingfor);
                     waitingfor++;
                 }
             }
@@ -517,7 +512,162 @@ fprintf(stderr, "Client %d has one 1 offer\n", waitingfor);
 
 static void do_battle()
 {
-    return;
+    int opponents = 0;
+    int player = 0;
+    int i;
+    int starta, startb;
+    
+    /* Distribute each player's troops among their skirmishes. */
+    for (player=0; player<MAXCLIENTS; player++) {
+        if (clientarray[player].playing > 0) {
+            for (i=0; i<MAXCLIENTS; i++) {
+                if (attackgrid[player][i] == 1 || attackgrid[i][player] == 1) {
+                    opponents++;
+                }
+            }
+            if (opponents > 0) {
+                for (i=0; i<MAXCLIENTS; i++) {
+                    if (attackgrid[player][i] == 1 || attackgrid[i][player] == 1) {
+                        battlegrid[player][i] = clientarray[player].troops/opponents;
+                    }
+                }
+                int leftover = clientarray[player].troops % ((clientarray[player].troops/opponents)*opponents);
+                i = 0;
+                while (leftover > 0) {
+                    if (attackgrid[player][i] == 1 || attackgrid[i][player] == 1) {
+                        battlegrid[player][i] += 1;
+                        leftover--;
+                    }
+                    i++;
+                }
+            }
+        }
+    }
+    
+    /* Do skirmishes. */
+    for (player=0; player<MAXCLIENTS; player++) {
+        for (i=0; i<MAXCLIENTS; i++) {
+            if (i > player && (attackgrid[player][i] == 1 || attackgrid[i][player] == 1)) {
+                if (attackgrid[player][i] == 1) { /* player is attacking - 3 rolls */
+                    a.count = 3;
+                }
+                else if (attackgrid[i][player] == 1) { /* player is not attacking - 2 rolls */
+                    a.count = 2;
+                }
+                if (attackgrid[i][player] == 1) { /* i is attacking - 3 rolls */
+                    b.count = 3;
+                }
+                else if (attackgrid[player][i] == 1) { /* i is not attacking - 2 rolls */
+                    b.count = 2;
+                }
+                starta = battlegrid[player][i]; // a = player
+                startb = battlegrid[i][player]; // b = i
+                if (starta >= 10 && startb >= 10) { /* both sides have at least 10 troops - fight until one has lost half */
+                    starta = starta/2;
+                    startb = startb/2;
+                }
+                else { /* one or both sides has less than 10 troops - fight to the death! */
+                    starta = 0;
+                    startb = 0;
+                }
+                while (battlegrid[player][i] > starta && battlegrid[i][player] > startb) { /* skirmish */
+                    a.first = (rand()%10)+1;
+                    a.second = (rand()%10)+1;
+                    if (a.count == 3) {
+                        a.third = (rand()%10)+1;
+                    }
+                    b.first = (rand()%10)+1;
+                    b.second = (rand()%10)+1;
+                    if (b.count == 3) {
+                        b.third = (rand()%10)+1;
+                    }
+                    sort_rolls();
+                    //compare highest rolls
+                    if (a.first > b.first) {
+                        //b loses a troop
+                        battlegrid[i][player] -= 1;
+                    }
+                    else if (a.first < b.first) {
+                        //a loses a troop
+                        battlegrid[player][i] -= 1;
+                    }
+                    //compare second highest rolls
+                    if (a.second > b.second) {
+                        //b loses a troop
+                        battlegrid[i][player] -= 1;
+                    }
+                    else if (a.second < b.second) {
+                        //a loses a troop
+                        battlegrid[player][i] -= 1;
+                    }
+                }
+            }
+        }
+    }
+    
+    /* Do cleanup. */
+    for (player=0; player<MAXCLIENTS; player++) {
+        if (clientarray[player].playing != 0) {
+            int remaining = 0;
+            for (i=0; i<MAXCLIENTS; i++) { /* count up remaining troops */
+                if (battlegrid[player][i] > 0) {
+                    remaining += battlegrid[player][i];
+                }
+            }
+            clientarray[player].troops = remaining;
+            if (remaining == 0) {
+                clientarray[player].playing = -1;
+                int j;
+                for (j=0; j<MAXCLIENTS; j++) { /* award new troops to any who contributed to a knockout */
+                    if (attackgrid[j][player] == 1) {
+                        clientarray[player].troops += startingforce;
+                        if (clientarray[player].troops > 99999) {
+                            clientarray[player].troops = 99999;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+
+
+static void sort_rolls()
+{
+    int temp;
+    
+    if (a.first < a.second) {
+        temp = a.first;
+        a.first = a.second;
+        a.second = temp;
+    }
+    if (a.first < a.third) {
+        temp = a.first;
+        a.first = a.third;
+        a.third = temp;
+    }
+    if (a.second < a.third) {
+        temp = a.second;
+        a.second = a.third;
+        a.third = temp;
+    }
+    if (b.first < b.second) {
+        temp = b.first;
+        b.first = b.second;
+        b.second = temp;
+    }
+    if (b.first < b.third) {
+        temp = b.first;
+        b.first = b.third;
+        b.third = temp;
+    }
+    if (b.second < b.third) {
+        temp = b.second;
+        b.second = b.third;
+        b.third = temp;
+    }
 }
 
 
@@ -1781,6 +1931,7 @@ static void zero_grids()
         for (j=0; j<MAXCLIENTS; j++) {
             offergrid[i][j].used = 0;
             attackgrid[i][j] = 0;
+            battlegrid[i][j] = 0;
         }
     }
 }
