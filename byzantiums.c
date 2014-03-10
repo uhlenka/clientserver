@@ -1,4 +1,4 @@
-/* chatserver.c - code for server program that allows clients to chat with one another */
+/* byzantiums.c - code for server program that allows clients to chat and play Byzantium with one another */
 #define closesocket close
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -18,7 +18,7 @@
 #define PROTOPORT 36724 /* default protocol port number */
 #define QLEN 30 /* size of request queue */
 #define MAXCLIENTS 30 /* maximum allowable number of clients */
-#define BUFSIZE 481  /* server's maximum buffer size */
+#define BUFSIZE 610  /* server's maximum buffer size */
 #define MAXMESSAGE 480 /* length of maximum allowable message */
 #define NAMESIZE 12 /* length of maximum allowable name */
 #define BODYSIZE 8 /* length of maximum name body */
@@ -29,17 +29,27 @@
 #define NOCLEAR 0 /* indicators for whether a client's info should be cleared on write error */
 
 /*------------------------------------------------------------------------
-* Program: chatserver
+* Program: byzantiums
 *
 * Purpose: allocate a socket and then repeatedly execute the following:
 * (1) wait for input from a client or a new client connection
 * (2) receive client messages or accept a new client if MAXCLIENTS is not reached
 * (3) respond appropriately to any client messages
+* (4) implement the game
 * (4) go back to step (1)
 *
-* Syntax: chatserver
+* Syntax: byzantiums [-m minplayers] [-l lobbytime] [-t timeout] [-f forcesize]
 *
-* port - protocol port number to use
+* minplayers    minimum number of players needed to start a game
+* lobbytime     number of seconds until game begins if numusers >= minplayers
+* timeout       number of seconds a player has to make a move
+* forcesize 	number of troops each player starts with
+*
+* All arguments are optional. The default values are as follows:
+* 	minplayers = 3
+* 	lobbytime = 10
+* 	timeout = 30
+*   forcesize = 1000
 *
 * Note: The port argument is optional. If no port is specified,
 * the server uses the default given by PROTOPORT.
@@ -53,6 +63,7 @@ typedef struct {
 		int joined;
         int playing;
 		int sent;
+        int offersent;
 		char *name;
 		int socket;
 		char *clibuf;
@@ -64,35 +75,35 @@ typedef struct {
 		int offers;
 	} clientinfo;
 clientinfo clientarray[MAXCLIENTS]; /* structure to hold client info */
-int numusers = 0; /* total number of players that have joined */
+int numusers = 0; /* total number of users that have joined */
 fd_set total_set, read_set; /* fd_sets to use with select */
 char buf[BUFSIZE]; /* buffer for sending and receiving messages */
 int minplayers = 3; /* minimum number of players needed to start a game - default 3 */
 int lobbytime = 10; /* number of seconds until game begins if numusers >= minplayers - default 10 */
 int timeout = 30; /* number of seconds a player has to make a move - default 30 */
-char listbuf[MAXMESSAGE]; /* buffer for building player list */
+int startingforce = 1000; /* number of troops each player starts with - default 1000 */
+char listbuf[BUFSIZE]; /* buffer for building user list */
 
+typedef struct {
+        int used;
+        int target;
+    } offerinfo;
+offerinfo offergrid[MAXCLIENTS][MAXCLIENTS] = {{{0}}}; /* 2-d array for keeping track of offer info */
 int attackgrid[MAXCLIENTS][MAXCLIENTS] = {{0}}; /* 2-d array for keeping track of attack info */
-int offergrid[MAXCLIENTS][MAXCLIENTS] = {{0}}; /* 2-d array for keeping track of offer info */
 int roundnum = 1; int phase = 0; /* variables for keeping track of where we are in the game */
-int waitingfor, responseto; /* variables for keeping track of what message the server is waiting for */
+int waiting = 0; int waitingfor = -1; int responseto = -1; /* variables for keeping track of what message the server is waiting for */
+time_t timestart; /* struct for implementing timeouts */
+int timerset = 0; /* variable for keeping track of whether the timer has been set */
 
-/*
-   Phase 1 - send out plan requests and receive plan responses
-   Phase 2 - send out offers and receive offer responses
-   Phase 3 - send out action requests and receive action responses,
-   			 send out notify messages,
-   			 battle,
-   			 send out sstats
-*/
 
-// TODO: modify sstat to include troop sizes, implement -m -l -t command line parameters,
-//       add -f command line parameter for starting troop size, implement badint strike for too large numbers
+// TODO: battle logic
+// don't forget:
 
-	
+
 /* helper functions */
 static void initialize_clientinfo(int client_no);
 static void clear_clientinfo(int client_no);
+static void zero_grids();
 static void write_to_client(int socket, int client_no, int clear);
 static void read_from_client(int socket, int client_no);
 static void parse_message(int client_no);
@@ -100,9 +111,10 @@ static void send_chat(char **message, char **recipients, int client_no);
 static int  find_name_end(char **current);
 static void convert_name(char **name);
 static void assign_name(char **name, int client_no);
-static void build_player_list();
+static void build_user_list();
 static int  find_right_paren(char **current, int *numchars);
 static void send_strike(int client_no, char reason);
+static void do_battle();
 
 
 
@@ -117,22 +129,50 @@ int main(int argc, char **argv)
 	struct protoent *ptrp; /* pointer to a protocol table entry */
 	struct sockaddr_in sad; /* structure to hold server's address */
 	struct sockaddr_in cad; /* structure to hold client address */
-	struct timeval timeout; /* structure to hold timeout info for select */
+	struct timeval selecttime; /* structure to hold timeout info for select */
 	int listensocket, tempsd; /* socket descriptors for listen port and acceptance */
 	int port; /* protocol port number */
 	int alen; /* length of address */
 	
-	timeout.tv_sec = 0; timeout.tv_usec = 0; /*initialize timeval struct */
+	selecttime.tv_sec = 0; selecttime.tv_usec = 0; /*initialize timeval struct */
 	FD_ZERO (&total_set); /* initialize fd_set */
 	int i;
 	for (i=0;i<30;i++) { /* initialize client info structure */
 		initialize_clientinfo(i);
 	}
+    
+    /* Get values from command line. */
+    for (i=1;i<argc;i++) {
+        if (strcmp(argv[i], "-m") == 0 && (i+1) < argc) {
+            sscanf(argv[i+1], "%d", &minplayers);
+        }
+        else if (strcmp(argv[i], "-l") == 0 && (i+1) < argc) {
+            sscanf(argv[i+1], "%d", &lobbytime);
+        }
+        else if (strcmp(argv[i], "-t") == 0 && (i+1) < argc) {
+            sscanf(argv[i+1], "%d", &timeout);
+        }
+        else if (strcmp(argv[i], "-f") == 0) {
+            sscanf(argv[i+1], "%d", &startingforce);
+        }
+    }
+    if (minplayers < 0) {
+        minplayers = 3;
+    }
+    if (lobbytime < 0) {
+        lobbytime = 10;
+    }
+    if (timeout < 0) {
+        timeout = 30;
+    }
+    if (startingforce < 0) {
+        startingforce = 1000;
+    }
 	
 	srand(time(NULL));
 	
 	memset(buf, '\0', BUFSIZE); /* clear read/write buffer */
-	memset(listbuf, '\0', MAXMESSAGE); /* clear player list buffer */
+	memset(listbuf, '\0', MAXMESSAGE); /* clear user list buffer */
 	memset((char *)&sad,0,sizeof(sad)); /* clear sockaddr structure */
 	sad.sin_family = AF_INET; /* set family to Internet */
 	sad.sin_addr.s_addr = INADDR_ANY; /* set the local IP address */
@@ -183,8 +223,7 @@ int main(int argc, char **argv)
 	/* Main server loop */
 	while (1) {
 		read_set = total_set;
-        //check timeout here?
-		if (select (FD_SETSIZE, &read_set, NULL, NULL, &timeout) < 0) {
+		if (select (FD_SETSIZE, &read_set, NULL, NULL, &selecttime) < 0) {
 			perror ("select");
 			exit (1);
 		}		
@@ -227,10 +266,10 @@ fprintf (stderr, "Error: recv on client %d\n", client_no);
 					else if (nbytes == 0) { /* client has died - drop its connection and clear its info */
 						closesocket(i);
 fprintf (stderr, "Dropped: Client %d - died\n", client_no);
-						if (clientarray[client_no].joined != 0) {
+						if (clientarray[client_no].joined != 0) { /* client had joined - send sstat to all users */
 							numusers--;
 							clientarray[client_no].joined = 0;
-							build_player_list();
+							build_user_list();
 							int i;
 							for (i=0; i<MAXCLIENTS; i++) {
 								if (clientarray[i].joined != 0 && i != client_no) {
@@ -252,43 +291,233 @@ fprintf (stderr, "Dropped: Client %d - died\n", client_no);
 				}
 			}
 		}
-        //game implementation goes here
-        //if phase == 0, we are in the lobby
-            //if numusers < minplayers, ignore
-            //else if timer is not set, start it
-            //else if timer is set and expired, set all joined users' playing status to 1 and enter phase 1
-        //else if phase == 1, we are in the planning phase
-            //for each player (use waitingfor to track this), send plan message and start timeout
-                //edit send_chat to detect SERVER messages and process them thusly:
-                    //if phase == 1 and sender matches waitingfor, add offer to offergrid and increment ally's offers (if applicable)
-                    //if message is malformed, strike and assume PASS
-                //if timer is set and expired, send player a strike and ??? (if no answer on Canvas, assume PASS)
-            //enter phase 2
-        //else if phase == 2, we are in the offer/response phase
-            //for each player (use waitingfor) and offer (use responseto), send offer message and start timeout
-                //add the following to SERVER message processing:
-                    //if phase == 2 and sender matches waitingfor and ally matches responseto, send response to ally
-                    //if message is malformed, strike and assume DECLINE and send to ally
-                //if timer is set and expired, send player a strike and ??? (if no answer on Canvas, assume DECLINE and send to ally)
-                //decrement player's offers
-            //enter phase 3
-        //else if phase == 3, we are in the action phase
+        /* Game logic */
+            //timeout check code:
+                /* if (difftime(time(NULL), timestart) >= (double)timeout) {
+                    //do whatever you do when the timer expires
+                 } */
+        if (phase == 0) { /* we are in the lobby */
+            if (numusers >= minplayers) { /* check if minplayers has been met */
+                if (timerset != 0) { /* check if timer has been set */
+                    if (difftime(time(NULL), timestart) >= (double)lobbytime) { /* check if timer has expired */
+                        /* Minplayers has been met and lobbytime has expired - enter phase 1. */
+                        for (i=0; i<MAXCLIENTS; i++) {
+                            if (clientarray[i].joined != 0) {
+                                clientarray[i].playing = 1;
+                                clientarray[i].troops = startingforce;
+                            }
+                        }
+                        timerset = 0;
+                        phase = 1;
+                        waitingfor = -1;
+                        fprintf(stderr, "-------- Phase 1: entering phase 1 --------\n");
+                    }
+                }
+                else {
+                    /* Minplayers has been met and lobbytime has not been started - start timer. */
+                    fprintf(stderr, "-------- Phase 0: starting countdown --------\n");
+                    time(&timestart);
+                    timerset = 1;
+                }
+            }
+        }
+        else if (phase == 1) { /* we are in the planning phase */
+            if (waitingfor < 0) {
+                waitingfor = 0;
+            }
+            if (waitingfor < MAXCLIENTS) {
+                if (clientarray[waitingfor].playing != 0) {
+                    if (timerset == 0) {
+                        /* Send PLAN message to waitingfor and start timer. */
+                        sprintf(buf, "(schat(SERVER)(PLAN,%d))", roundnum);
+                        write_to_client(clientarray[waitingfor].socket, waitingfor, CLEAR);
+                        time(&timestart);
+                        timerset = 1;
+                    }
+                    else { /* check if timer has expired */
+                        if (difftime(time(NULL), timestart) >= (double)timeout) {
+                            /* waitingfor has timed out - send strike and move on to next player. */
+                            send_strike(waitingfor, 't');
+                            waitingfor++;
+                            timerset = 0;
+                        }
+                    }
+                }
+                else { /* waitingfor is not playing - move to next client */
+//fprintf(stderr, "Client %d not playing\n", waitingfor);
+                    waitingfor++;
+                }
+            }
+            else {
+                /* Phase 1 finished - enter phase 2. */
+                fprintf(stderr, "-------- Phase 2: entering phase 2 --------\n");
+                waitingfor = -1;
+                phase = 2;
+            }
+        }
+        else if (phase == 2) { /* we are in the offer/response phase */
+            if (waitingfor < 0) {
+                waitingfor = 0;
+            }
+            if (responseto < 0) {
+                responseto = 0;
+            }
+            if (waitingfor < MAXCLIENTS) {
+                if (responseto < MAXCLIENTS) {
+                    if (clientarray[waitingfor].playing != 0) { /* check if waitingfor is playing */
+                        if (offergrid[waitingfor][responseto].used != 0) { /* check if waitingfor has an offer from responseto */
+                            if (timerset == 0) {
+                                /* Send OFFER message to waitingfor, decrement waitingfor's offers, and start timer. */
+                                if (clientarray[waitingfor].offers > 1) {
+fprintf(stderr, "Client %d has more than 1 offer\n", waitingfor);
+                                    //send offer with OFFER message
+                                    clientarray[waitingfor].offersent = 1;
+                                    int target = offergrid[waitingfor][responseto].target;
+                                    sprintf(buf, "(schat(SERVER)(OFFER,%d,%s,%s))", roundnum, clientarray[responseto].name, clientarray[target].name);
+                                    write_to_client(clientarray[waitingfor].socket, waitingfor, CLEAR);
+                                    clientarray[waitingfor].offers -= 1;
+                                }
+                                else if (clientarray[waitingfor].offers == 1) {
+fprintf(stderr, "Client %d has one 1 offer\n", waitingfor);
+                                    //send last offer with OFFERL message
+                                    clientarray[waitingfor].offersent = 1;
+                                    int target = offergrid[waitingfor][responseto].target;
+                                    sprintf(buf, "(schat(SERVER)(OFFERL,%d,%s,%s))", roundnum, clientarray[responseto].name, clientarray[target].name);
+                                    write_to_client(clientarray[waitingfor].socket, waitingfor, CLEAR);
+                                    clientarray[waitingfor].offers -= 1;
+                                }
+                                time(&timestart);
+                                timerset = 1;
+                            }
+                            else { /* check if timer has expired */
+                                if (difftime(time(NULL), timestart) >= (double)timeout) {
+                                    /* waitingfor has timed out - send strike and move on to next offer. */
+                                    send_strike(waitingfor, 't');
+                                    responseto++;
+                                    timerset = 0;
+                                }
+                            }
+                        }
+                        else if (clientarray[waitingfor].offers == 0 && clientarray[waitingfor].offersent == 0) { /* no offers for waitingfor - send empty OFFERL message and move to next client */
+                            sprintf(buf, "(schat(SERVER)(OFFERL,%d))", roundnum);
+                            write_to_client(clientarray[waitingfor].socket, waitingfor, CLEAR);
+                            waitingfor++;
+                        }
+                        else { /* no offer from responseto - move to next offer */
+//fprintf(stderr, "No offer from %d\n", responseto);
+                            responseto++;
+                        }
+                    }
+                    else { /* waitingfor is not playing - move to next client */
+//fprintf(stderr, "Client %d not playing\n", waitingfor);
+                        waitingfor++;
+                    }
+                }
+                else { /* done with offers for waitingfor - reset offersent and responseto and move to next client */
+                    clientarray[waitingfor].offersent = 0;
+                    waitingfor++;
+                    responseto = 0;
+                }
+            }
+            else {
+                /* Phase 2 finished - enter phase 3. */
+                fprintf(stderr, "-------- Phase 3: entering phase 3 --------\n");
+                waitingfor = -1;
+                phase = 3;
+            }
+        }
+        else if (phase == 3) { /* we are in the action phase */
             //for each player (use waitingfor), send action message and start timeout
-                //add the following to SERVER message processing:
-                    //if phase == 3 and sender matches waitingfor, add action to offergrid (if applicable) and send notify to all joined users
-                    //if message is malformed, strike and assume PASS and send notify to all joined users
-                //if timer is set and expired, send player a strike and ??? (if no answer on Canvas, assume PASS and send notify to all joined users)
+                //if timer is set and expired, send player a strike and assume PASS
             //implement battle algorithm
                 //if a player is killed off, update their playing status to -1 to indicate they cannot join until the current game is over
-            //send sstat to all joined users
-            //zero out offergrid and attackgrid
-            //if the number of players > 1:
-                //increment roundnum (if already at 99999, wrap back around to 1), add any newly joined users (playing == 0) to the game (and update their playing status to 1), enter phase 1
-            //else
-                //set roundnum to 1, set all joined users' playing status to 0, enter phase 0
+            if (waitingfor < 0) {
+                waitingfor = 0;
+            }
+            if (waitingfor < MAXCLIENTS) {
+                if (clientarray[waitingfor].playing != 0) {
+                    if (timerset == 0) {
+                        /* Send ACTION message to waitingfor and start timer. */
+                        sprintf(buf, "(schat(SERVER)(ACTION,%d))", roundnum);
+                        write_to_client(clientarray[waitingfor].socket, waitingfor, CLEAR);
+                        time(&timestart);
+                        timerset = 1;
+                    }
+                    else { /* check if timer has expired */
+                        if (difftime(time(NULL), timestart) >= (double)timeout) {
+                            /* waitingfor has timed out - send strike and move on to next player. */
+                            send_strike(waitingfor, 't');
+                            waitingfor++;
+                            timerset = 0;
+                        }
+                    }
+                }
+                else { /* waitingfor is not playing - move to next client */
+//fprintf(stderr, "Client %d not playing\n", waitingfor);
+                    waitingfor++;
+                }
+            }
+            else {
+                /* Phase 3 messages finished - enter battle. */
+                fprintf(stderr, "-------- Phase 3: entering battle --------\n");
+                do_battle();
+                build_user_list();
+                memset(buf, '\0', BUFSIZE);
+                for (i=0; i<MAXCLIENTS; i++) { /* send sstat to all users */
+                    if (clientarray[i].joined != 0) {
+                        sprintf(buf, "(sstat(%s))", listbuf);
+                        write_to_client(clientarray[i].socket, i, CLEAR);
+                    }
+                }
+                memset(listbuf, '\0', BUFSIZE);
+                zero_grids(); /* zero out offergrid and attackgrid */
+                int numplayers = 0;
+                for (i=0; i<MAXCLIENTS; i++) {
+                    if (clientarray[i].playing > 0) {
+                        numplayers++;
+                    }
+                }
+                if (numplayers > 1) { /* game is not over - increment roundnum, add any newly joined users, and enter phase 1 */
+                    roundnum++;
+                    if (roundnum > 99999) {
+                        roundnum = 1;
+                    }
+                    for (i=0; i<MAXCLIENTS; i++) {
+                        if (clientarray[i].joined != 0 && clientarray[i].playing == 0) {
+                            clientarray[i].playing = 1;
+                            clientarray[i].troops = startingforce;
+                        }
+                    }
+                    waitingfor = -1;
+                    phase = 1;
+                }
+                else { /* game is over - set roundnum to 1, set all joined users' playing status to 0, enter phase 0 */
+                    roundnum = 1;
+                    for (i=0; i<MAXCLIENTS; i++) {
+                        if (clientarray[i].joined != 0) {
+                            clientarray[i].playing = 0;
+                        }
+                    }
+                    waitingfor = -1;
+                    phase = 0;
+                }
+            }
+        }
+        else {
+            fprintf(stderr, "Error: phase is out of bounds\n");
+            exit(1);
+        }
 	}
 	
 	exit(0);
+}
+
+
+
+
+static void do_battle()
+{
+    return;
 }
 
 
@@ -402,7 +631,7 @@ fprintf (stderr, "Message: '%s' from client %d\n", clientarray[client_no].clibuf
                                 }
                                 numchars++;
                                 tempbufp++;
-                                if (*tempbufp == ')') { /* proper cchat - truncate message if necessary and send to recipients */
+                                if (*tempbufp == ')') { /* proper cchat - send to valid recipients */
 fprintf (stderr, "Cchat: client %d\n", client_no);
 									if (clientarray[client_no].joined != 0) {
 										send_chat(&message, &recipients, client_no);
@@ -526,7 +755,7 @@ fprintf (stderr, "Cchat: client %d\n", client_no);
                             if (*tempbufp == ')') { /* proper cjoin - apply naming algorithm if necessary and assign name */
 fprintf (stderr, "Cjoin: client %d - ", client_no);
                             	if (clientarray[client_no].joined == 0) {
-fprintf (stderr, "new player\n");
+fprintf (stderr, "new user\n");
                                 	assign_name(&name, client_no);
                                 }
                                 else {
@@ -614,10 +843,10 @@ fprintf (stderr, "Name: client %d: %s\n", client_no, clientarray[client_no].name
                     tempbufp++;
                     if (*tempbufp == 't') {
                         tempbufp++;
-                        if (*tempbufp == ')') { /* proper cstat - respond with list of players */
+                        if (*tempbufp == ')') { /* proper cstat - respond with sstat */
 fprintf (stderr, "Cstat: client %d\n", client_no);
 							if (clientarray[client_no].joined != 0) {
-                            	build_player_list();
+                            	build_user_list();
                             	sprintf(buf, "(sstat(%s))", listbuf);
                             	memset(listbuf, '\0', MAXMESSAGE);
                             	write_to_client(clientarray[client_no].socket, client_no, CLEAR);
@@ -740,6 +969,8 @@ fprintf (stderr, "Cstat: client %d\n", client_no);
 static void send_chat(char **message, char **recipients, int client_no)
 {
 	int zero = 0;
+    char *fieldstart = *message;
+    char *fieldend = fieldstart;
 	char *messageend = *message;
 	find_right_paren(&messageend, &zero);
 	*messageend = '\0';
@@ -774,7 +1005,9 @@ static void send_chat(char **message, char **recipients, int client_no)
 
 	/* Check for "ANY" or "ALL" recipient. */
 	if (result == 0) {
-		if (strcasecmp("ANY", namestart) == 0) {
+		if (strcmp("ANY", namestart) == 0) {
+            /* Cchat to ANY - send to valid user. */
+fprintf(stderr, "Cchat to any\n");
 			if (numusers > 1) {
 				if (numusers == 2) {
 					for (i=0; i<MAXCLIENTS; i++) {
@@ -799,7 +1032,9 @@ static void send_chat(char **message, char **recipients, int client_no)
 			}
 			return;
 		}
-		else if (strcasecmp("ALL", namestart) == 0) {
+		else if (strcmp("ALL", namestart) == 0) {
+            /* Cchat to ALL - send to all users. */
+fprintf(stderr, "Cchat to all\n");
 			for (i=0; i<MAXCLIENTS; i++) {
 				if (clientarray[i].joined != 0) {
 					sprintf(buf, "(schat(%s)(%s))", clientarray[client_no].name, short_message);
@@ -808,10 +1043,301 @@ static void send_chat(char **message, char **recipients, int client_no)
 			}
 			return;
 		}
+        /* Check for SERVER message. */
+        if (strcmp("SERVER", namestart) == 0) {
+            // Process SERVER message.
+            if (client_no != waitingfor) {
+                // Not expecting a SERVER message from this client - strike and return.
+fprintf(stderr, "SERVER: waiting for %d, got message from %d\n", waitingfor, client_no);
+                send_strike(client_no, 'm');
+                return;
+            }
+            result = find_name_end(&fieldend);
+            *fieldend = '\0';
+            if (result != 1) { // malformed - strike, increment waitingfor, reset timer, and return
+                send_strike(client_no, 'm');
+                waitingfor++;
+                timerset = 0;
+                return;
+            }
+            if (phase == 1) {
+                if (strcmp("PLAN", fieldstart) == 0) { // look for PLAN type message
+                    fieldend++;
+                    fieldstart = fieldend;
+                    result = find_name_end(&fieldend);
+                    *fieldend = '\0';
+                    if (result != 1) { // not enough fields - strike, increment waitingfor, reset timer, and return
+                        send_strike(client_no, 'm');
+                        waitingfor++;
+                        timerset = 0;
+                        return;
+                    }
+                    int givenround = (int) strtol(fieldstart, NULL, 10); // look for correct round number
+                    if (givenround > 99999) { // badint - strike, increment waitingfor, reset timer, and return
+                        send_strike(client_no, 'b');
+                        waitingfor++;
+                        timerset = 0;
+                        return;
+                    }
+                    else if (givenround != roundnum) { // client has wrong round number - strike, increment waitingfor, reset timer, and return
+                        send_strike(client_no, 'm');
+                        waitingfor++;
+                        timerset = 0;
+                        return;
+                    }
+                    fieldend++;
+                    fieldstart = fieldend;
+                    result = find_name_end(&fieldend);
+                    *fieldend = '\0';
+                    if (result == -1 && strcmp("PASS", fieldstart) == 0) { // check for PASS action
+                        // Player passes - increment waitingfor, reset timer, and return.
+                        fprintf(stderr, "Pass: client %d\n", client_no);
+                        waitingfor++;
+                        timerset = 0;
+                        return;
+                    }
+                    else if (result == 1 && strcmp("APPROACH", fieldstart) == 0) { // check for APPROACH action
+                        // Player wants to make an offer - check validity.
+                        fieldend++;
+                        fieldstart = fieldend;
+                        result = find_name_end(&fieldend);
+                        *fieldend = '\0';
+                        if (result != 1) { // not enough fields - strike, increment waitingfor, reset timer, and return
+                            send_strike(client_no, 'm');
+                            waitingfor++;
+                            timerset = 0;
+                            return;
+                        }
+                        int ally;
+                        for (ally=0; ally<MAXCLIENTS; ally++) {
+                            if (strcmp(clientarray[ally].name, fieldstart) == 0) {
+                                break;
+                            }
+                        }
+                        if (ally < MAXCLIENTS) { // check for valid ally (message ignored if ally = self)
+                            if (ally != client_no) {
+                                offergrid[ally][client_no].used = 1;
+                                clientarray[ally].offers += 1;
+                            }
+                            fieldend++;
+                            fieldstart = fieldend;
+                            result = find_name_end(&fieldend);
+                            *fieldend = '\0';
+                            if (result != -1) { // too many fields - strike, increment waitingfor, reset timer, and return
+                                send_strike(client_no, 'm');
+                                waitingfor++;
+                                timerset = 0;
+                                return;
+                            }
+                            int target;
+                            for (target=0; target<MAXCLIENTS; target++) {
+                                if (strcmp(clientarray[target].name, fieldstart) == 0) {
+                                    break;
+                                }
+                            }
+                            if (target < MAXCLIENTS && clientarray[target].used != 0) { // check for valid target
+                                // Player has made a valid offer - add info to offergrid, increment waitingfor, reset timer, and return.
+                                if (ally != client_no) {
+                                    fprintf(stderr, "Approach: client %d to client %d, attacking %d\n", client_no, ally, target);
+                                    offergrid[ally][client_no].target = target;
+//fprintf(stderr, "offergrid[ally][client_no].used = %d\n", offergrid[ally][client_no].used);
+//fprintf(stderr, "offergrid[ally][client_no].target = %d\n", offergrid[ally][client_no].target);
+                                }
+                                else {
+                                    fprintf(stderr, "Approach: client %d to self, attacking %d\n", client_no, target);
+//fprintf(stderr, "offergrid[ally][client_no].used = %d\n", offergrid[ally][client_no].used);
+//fprintf(stderr, "offergrid[ally][client_no].target = %d\n", offergrid[ally][client_no].target);
+                                }
+                                waitingfor++;
+                                timerset = 0;
+                                return;
+                            }
+                            else { // invalid target - erase any changes to offergrid, strike, increment waitingfor, reset timer, and return
+                                if (ally != client_no) {
+                                    offergrid[ally][client_no].used = 0;
+                                    clientarray[ally].offers -= 1;
+                                }
+                                send_strike(client_no, 'm');
+                                waitingfor++;
+                                timerset = 0;
+                                return;
+                            }
+                        }
+                        else { // invalid ally - strike, increment waitingfor, reset timer, and return
+                            send_strike(client_no, 'm');
+                            waitingfor++;
+                            timerset = 0;
+                            return;
+                        }
+                    }
+                    else { // invalid action or wrong number of fields - strike, increment waitingfor, reset timer, and return
+                        send_strike(client_no, 'm');
+                        waitingfor++;
+                        timerset = 0;
+                        return;
+                    }
+                }
+                else { // invalid message type - strike, increment waitingfor, reset timer, and return
+                    send_strike(client_no, 'm');
+                    waitingfor++;
+                    timerset = 0;
+                    return;
+                }
+            }
+            else if (phase == 2) {
+                if (strcmp("ACCEPT", fieldstart) == 0 || strcmp("DECLINE", fieldstart) == 0) { // look for ACCEPT or DECLINE type message
+                    char *action = fieldstart;
+                    fieldend++;
+                    fieldstart = fieldend;
+                    result = find_name_end(&fieldend);
+                    *fieldend = '\0';
+                    if (result != 1) { // not enough fields - strike, increment responseto, reset timer, and return
+                        send_strike(client_no, 'm');
+                        responseto++;
+                        timerset = 0;
+                        return;
+                    }
+                    int givenround = (int) strtol(fieldstart, NULL, 10); // look for correct round number
+                    if (givenround > 99999) { // badint - strike, increment responseto, reset timer, and return
+                        send_strike(client_no, 'b');
+                        responseto++;
+                        timerset = 0;
+                        return;
+                    }
+                    else if (givenround != roundnum) { // client has wrong round number - strike, increment responseto, reset timer, and return
+                        send_strike(client_no, 'm');
+                        responseto++;
+                        timerset = 0;
+                        return;
+                    }
+                    fieldend++;
+                    fieldstart = fieldend;
+                    result = find_name_end(&fieldend);
+                    *fieldend = '\0';
+                    if (result != -1) { // too many fields - strike, increment responseto, reset timer, and return
+                        send_strike(client_no, 'm');
+                        responseto++;
+                        timerset = 0;
+                        return;
+                    }
+                    if (strcmp(clientarray[responseto].name, fieldstart) == 0) {
+                        // Valid offer response - send response to ally, increment responseto, reset timer, and return.
+                        char actionbuf[8];
+                        sprintf(actionbuf, "%s", action);
+                        sprintf(buf, "(schat(SERVER)(%s,%d,%s))", actionbuf, roundnum, clientarray[client_no].name);
+                        write_to_client(clientarray[responseto].socket, responseto, CLEAR);
+                        responseto++;
+                        timerset = 0;
+                        return;
+                    }
+                    else { // response to wrong user - strike, increment responseto, reset timer, and return
+                        send_strike(client_no, 'm');
+                        responseto++;
+                        timerset = 0;
+                        return;
+                    }
+                }
+                else { // invalid message type - strike, increment responseto, reset timer, and return
+                    send_strike(client_no, 'm');
+                    responseto++;
+                    timerset = 0;
+                    return;
+                }
+            }
+            else if (phase == 3) {
+                //if not malformed, add action to offergrid (if applicable) and send notify to all joined users
+                //else, strike and assume PASS
+                if (strcmp("ACTION", fieldstart) == 0) { // look for ACTION type message
+                    fieldend++;
+                    fieldstart = fieldend;
+                    result = find_name_end(&fieldend);
+                    *fieldend = '\0';
+                    if (result != 1) { // not enough fields - strike, increment waitingfor, reset timer, and return
+                        send_strike(client_no, 'm');
+                        waitingfor++;
+                        timerset = 0;
+                        return;
+                    }
+                    int givenround = (int) strtol(fieldstart, NULL, 10); // look for correct round number
+                    if (givenround > 99999) { // badint - strike, increment waitingfor, reset timer, and return
+                        send_strike(client_no, 'b');
+                        waitingfor++;
+                        timerset = 0;
+                        return;
+                    }
+                    else if (givenround != roundnum) { // client has wrong round number - strike, increment waitingfor, reset timer, and return
+                        send_strike(client_no, 'm');
+                        waitingfor++;
+                        timerset = 0;
+                        return;
+                    }
+                    fieldend++;
+                    fieldstart = fieldend;
+                    result = find_name_end(&fieldend);
+                    *fieldend = '\0';
+                    if (result == -1 && strcmp("PASS", fieldstart) == 0) {
+                        // Player passes - increment waitingfor, reset timer, and return.
+                        waitingfor++;
+                        timerset = 0;
+                        return;
+                    }
+                    else if (result == 1 && strcmp("ATTACK", fieldstart) == 0) {
+                        // Player wants to attack - check validity.
+                        fieldend++;
+                        fieldstart = fieldend;
+                        result = find_name_end(&fieldend);
+                        *fieldend = '\0';
+                        if (result == -1) {
+                            for (i=0; i<MAXCLIENTS; i++) {
+                                if (strcmp(clientarray[i].name, fieldstart) == 0) {
+                                    break;
+                                }
+                            }
+                            if (i < MAXCLIENTS) {
+                                // Valid attack message - update attackgrid, increment waitingfor, reset timer, and return.
+                                attackgrid[client_no][i] = 1;
+//notify message goes here
+                                waitingfor++;
+                                timerset = 0;
+                                return;
+                            }
+                            else { // invalid target - strike, increment waitingfor, reset timer, and return
+                                send_strike(client_no, 'm');
+                                waitingfor++;
+                                timerset = 0;
+                                return;
+                            }
+                        }
+                        else { // too many fields - strike, increment waitingfor, reset timer, and return
+                            send_strike(client_no, 'm');
+                            waitingfor++;
+                            timerset = 0;
+                            return;
+                        }
+                    }
+                    else { // invalid action or wrong number of fields - strike, increment waitingfor, reset timer, and return
+                        send_strike(client_no, 'm');
+                        waitingfor++;
+                        timerset = 0;
+                        return;
+                    }
+                }
+                else { // invalid message type - strike, increment waitingfor, reset timer, and return
+                    send_strike(client_no, 'm');
+                    waitingfor++;
+                    timerset = 0;
+                    return;
+                }
+            }
+            else {
+                fprintf(stderr, "Error: phase is out of bounds\n");
+                exit(1);
+            }
+        }
 	}
 	
 	/* Send message to all valid recipients. */
-	int namefound, strikesent;
+	int namefound = 0; int strikesent = 0;
 	while (result != 0) {
 		namefound = 0;
 		for (i=0; i<MAXCLIENTS; i++) {
@@ -860,7 +1386,7 @@ static void send_chat(char **message, char **recipients, int client_no)
 		strikesent = 1;
 	}
 	
-	/* Reset 'sent' flag for all players. */
+	/* Reset 'sent' flag for all users. */
 	for (i=0; i<MAXCLIENTS; i++) {
 		clientarray[i].sent = 0;
 	}
@@ -874,15 +1400,18 @@ static int find_name_end(char **current)
 {
     char *pos = *current;
     
-    while (*pos != ')' && *pos != ',') {
+    while (*pos != ')' && *pos != ',' && *pos != '\0') {
         pos++;
     }
     *current = pos;
     if (*pos == ')') {
         return 0;
     }
-    else {
+    else if (*pos == ',') {
         return 1;
+    }
+    else {
+        return -1;
     }
 }
 
@@ -1083,10 +1612,10 @@ static void assign_name(char **name, int client_no)
 		sprintf(clientarray[client_no].name, "%s", tentative);
 	}
 
-	/* update player information, send sjoin to new player and sstat to all others */
+	/* update user information, send sjoin to new user and sstat to all other users */
 	clientarray[client_no].joined = 1;
 	numusers++;
-	build_player_list();
+	build_user_list();
 	sprintf(buf, "(sjoin(%s)(%s)(%d,%d,%d))", clientarray[client_no].name, listbuf, minplayers, lobbytime, timeout);
 	write_to_client(clientarray[client_no].socket, client_no, CLEAR);
 	for (i=0; i<MAXCLIENTS; i++) {
@@ -1103,18 +1632,21 @@ static void assign_name(char **name, int client_no)
 
 
 
-static void build_player_list()
+static void build_user_list()
 {
+    char triple[21];
 	int added = 0;
 	int i;
 	for (i=0; i<MAXCLIENTS; i++) {
 		if (clientarray[i].joined != 0) {
 			if (added == 0) {
-				sprintf(listbuf, "%s", clientarray[i].name);
+				sprintf(listbuf, "%s,%d,%d", clientarray[i].name, clientarray[i].strikes, clientarray[i].troops);
 			}
 			else {
 				strcat(listbuf, ",");
-				strcat(listbuf, clientarray[i].name);
+                sprintf(triple, "%s,%d,%d", clientarray[i].name, clientarray[i].strikes, clientarray[i].troops);
+				strcat(listbuf, triple);
+                memset(triple, '\0', 21);
 			}
 			added++;
 		}
@@ -1191,10 +1723,10 @@ fprintf(stderr, "Strike: %d to client %d\n", clientarray[client_no].strikes, cli
     if (clientarray[client_no].used != 0 && clientarray[client_no].strikes == 3) { /* 3rd strike - drop client connection */
         closesocket(clientarray[client_no].socket);
 fprintf (stderr, "Dropped: Client %d - 3 strikes\n", client_no);
-        if (clientarray[client_no].joined != 0) { /* client had a name - send sstat to all players */
+        if (clientarray[client_no].joined != 0) { /* client had joined - send sstat to all users */
 				numusers--;
 				clientarray[client_no].joined = 0;
-				build_player_list();
+				build_user_list();
 				int i;
 				for (i=0; i<MAXCLIENTS; i++) {
 					if (clientarray[i].joined != 0 && i != client_no) {
@@ -1219,10 +1751,10 @@ void write_to_client(int socket, int client_no, int clear)
 	if (write(socket, &buf, strlen(buf)*sizeof(char)) < 0) {
 fprintf (stderr, "Dropped: Client %d - Write error\n", client_no);
 		if (clear == CLEAR) {
-			if (clientarray[client_no].joined != 0) {
+			if (clientarray[client_no].joined != 0) { /* client had joined - send sstat to all users */
 				numusers--;
 				clientarray[client_no].joined = 0;
-				build_player_list();
+				build_user_list();
 				int i;
 				for (i=0; i<MAXCLIENTS; i++) {
 					if (clientarray[i].joined != 0 && i != client_no) {
@@ -1242,6 +1774,20 @@ fprintf (stderr, "Dropped: Client %d - Write error\n", client_no);
 
 
 
+static void zero_grids()
+{
+    int i, j;
+    for (i=0; i<MAXCLIENTS; i++) {
+        for (j=0; j<MAXCLIENTS; j++) {
+            offergrid[i][j].used = 0;
+            attackgrid[i][j] = 0;
+        }
+    }
+}
+
+
+
+
 
 
 void clear_clientinfo(int client_no)
@@ -1250,6 +1796,7 @@ void clear_clientinfo(int client_no)
 	clientarray[client_no].joined = 0;
     clientarray[client_no].playing = 0;
 	clientarray[client_no].sent = 0;
+    clientarray[client_no].offersent = 0;
 	clientarray[client_no].socket = -1;
 	memset(clientarray[client_no].name, '\0', NAMESIZE+1);
 	memset(clientarray[client_no].clibuf, '\0', BUFSIZE);
@@ -1272,6 +1819,7 @@ void initialize_clientinfo(int client_no)
 	clientarray[client_no].joined = 0;
     clientarray[client_no].playing = 0;
 	clientarray[client_no].sent = 0;
+    clientarray[client_no].offersent = 0;
 	clientarray[client_no].socket = -1;
 	clientarray[client_no].name = malloc((NAMESIZE+1)*sizeof(char));
 	clientarray[client_no].clibuf = malloc(BUFSIZE*sizeof(char));
