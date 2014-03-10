@@ -24,7 +24,7 @@ char uhlenka[] = "UHLENKA"; /* default client name */
 *
 * Purpose: communicate with a chatserver and play Byzantium
 *
-* Syntax: client [-h] [-s server] [-p port] [-n name] [-m]
+* Syntax: byzantiumc [-h] [-s server] [-p port] [-n name] [-m]
 *
 * -h 	  the client will print a description of its parameters and then exit
 * server  IP address or name of a computer on which server is executing
