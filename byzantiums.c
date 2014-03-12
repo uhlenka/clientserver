@@ -57,6 +57,7 @@
 *------------------------------------------------------------------------
 */
 
+
 /* global variables */
 typedef struct {
 		int used;
@@ -101,11 +102,7 @@ die a = {0}; die b = {0}; /* variables for keeping track of dice rolls during ba
 int roundnum = 1; int phase = 0; /* variables for keeping track of where we are in the game */
 int waiting = 0; int waitingfor = -1; int responseto = -1; /* variables for keeping track of what message the server is waiting for */
 time_t timestart; /* struct for implementing timeouts */
-int timerset = 0; /* variable for keeping track of whether the timer has been set */
-
-
-// TODO: battle logic
-// don't forget: 
+int timerset = 0; /* variable for keeping track of whether the timer has been set */ 
 
 
 /* helper functions */
@@ -122,6 +119,7 @@ static void assign_name(char **name, int client_no);
 static void build_user_list();
 static int  find_right_paren(char **current, int *numchars);
 static void send_strike(int client_no, char reason);
+static void send_notifies();
 static void do_battle();
 static void sort_rolls();
 
@@ -463,6 +461,7 @@ fprintf (stderr, "Dropped: Client %d - died\n", client_no);
             else {
                 /* Phase 3 messages finished - enter battle. */
                 fprintf(stderr, "-------- Phase 3: entering battle --------\n");
+                send_notifies();
                 do_battle();
                 build_user_list();
                 memset(buf, '\0', BUFSIZE);
@@ -515,6 +514,26 @@ fprintf (stderr, "Dropped: Client %d - died\n", client_no);
 	}
 	
 	exit(0);
+}
+
+
+
+
+static void send_notifies()
+{
+	int attacker, target, user;
+	for (attacker=0; attacker<MAXCLIENTS; attacker++) {
+		for (target=0; target<MAXCLIENTS; target++) {
+			if (attackgrid[attacker][target] == 1) {
+				for (user=0; user<MAXCLIENTS; user++) {
+					if (clientarray[user].joined != 0) {
+						sprintf(buf, "(schat(SERVER)(NOTIFY,%d,%s,%s))", roundnum, clientarray[attacker].name, clientarray[target].name);
+						write_to_client(clientarray[user].socket, user, CLEAR);
+					}
+				}
+			}
+		}
+	}
 }
 
 
