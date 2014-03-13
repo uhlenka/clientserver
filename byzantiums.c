@@ -63,6 +63,7 @@ typedef struct {
 		int used;
 		int joined;
         int playing;
+        int fighting;
 		int sent;
         int offersent;
 		char *name;
@@ -116,6 +117,7 @@ static void send_chat(char **message, char **recipients, int client_no);
 static int  find_name_end(char **current);
 static void convert_name(char **name);
 static void assign_name(char **name, int client_no);
+static void build_user_list_names();
 static void build_user_list();
 static int  find_right_paren(char **current, int *numchars);
 static void send_strike(int client_no, char reason);
@@ -300,27 +302,32 @@ fprintf (stderr, "Dropped: Client %d - died\n", client_no);
 		}
         /* Game logic */
         if (phase == 0) { /* we are in the lobby */
-            if (numusers >= minplayers) { /* check if minplayers has been met */
-                if (timerset != 0) { /* check if timer has been set */
-                    if (difftime(time(NULL), timestart) >= (double)lobbytime) { /* check if timer has expired */
-                        /* Minplayers has been met and lobbytime has expired - enter phase 1. */
-                        for (i=0; i<MAXCLIENTS; i++) {
-                            if (clientarray[i].joined != 0) {
-                                clientarray[i].playing = 1;
-                                clientarray[i].troops = startingforce;
-                            }
-                        }
-                        timerset = 0;
-                        phase = 1;
-                        waitingfor = -1;
-                        fprintf(stderr, "-------- Phase 1: entering phase 1 --------\n");
-                    }
+            if (timerset != 0) { /* check if timer has been set */
+            	if (numusers >= minplayers) { /* check if minplayers has been met */
+                	if (difftime(time(NULL), timestart) >= (double)lobbytime) { /* check if timer has expired */
+                    	/* Minplayers has been met and lobbytime has expired - enter phase 1. */
+                    	for (i=0; i<MAXCLIENTS; i++) {
+                       		if (clientarray[i].joined != 0) {
+                            	clientarray[i].playing = 1;
+                            	clientarray[i].troops = startingforce;
+                        	}
+                    	}
+                    	timerset = 0;
+                    	phase = 1;
+                    	waitingfor = -1;
+                    	fprintf(stderr, "-------- Phase 1: entering phase 1 --------\n");
+                	}
                 }
                 else {
-                    /* Minplayers has been met and lobbytime has not been started - start timer. */
-                    fprintf(stderr, "-------- Phase 0: starting countdown --------\n");
-                    time(&timestart);
-                    timerset = 1;
+                	timerset = 0;
+                }
+            }
+            else {
+            	if (numusers >= minplayers) { /* check if minplayers has been met */
+                	/* Minplayers has been met and lobbytime has not been started - start timer. */
+                	fprintf(stderr, "-------- Phase 0: starting countdown --------\n");
+                	time(&timestart);
+                	timerset = 1;
                 }
             }
         }
@@ -499,6 +506,7 @@ fprintf (stderr, "Dropped: Client %d - died\n", client_no);
                     for (i=0; i<MAXCLIENTS; i++) {
                         if (clientarray[i].joined != 0) {
                             clientarray[i].playing = 0;
+                            clientarray[i].troops = 0;
                         }
                     }
                     waitingfor = -1;
@@ -578,8 +586,10 @@ static void do_battle()
     
     /* Do skirmishes. */
     for (player=0; player<MAXCLIENTS; player++) {
+//if (clientarray[player].playing == 1) fprintf(stderr, "Start: %s: %d\n", clientarray[player].name, clientarray[player].troops);
         for (i=0; i<MAXCLIENTS; i++) {
             if (i > player && (attackgrid[player][i] == 1 || attackgrid[i][player] == 1)) {
+            	clientarray[player].fighting = 1;
                 if (attackgrid[player][i] == 1) { /* player is attacking - 3 rolls */
                     a.count = 3;
 fprintf(stderr, "%s (attacking) vs. %s ", clientarray[player].name, clientarray[i].name);
@@ -645,7 +655,7 @@ fprintf(stderr, "Result: %s: %d, %s: %d\n", clientarray[player].name, battlegrid
     
     /* Do cleanup. */
     for (player=0; player<MAXCLIENTS; player++) {
-        if (clientarray[player].playing != 0) {
+        if (clientarray[player].playing != 0 && clientarray[player].fighting != 0) {
             int remaining = 0;
             for (i=0; i<MAXCLIENTS; i++) { /* count up remaining troops */
                 if (battlegrid[player][i] > 0) {
@@ -654,8 +664,9 @@ fprintf(stderr, "Result: %s: %d, %s: %d\n", clientarray[player].name, battlegrid
             }
 fprintf(stderr, "Final: %s: %d\n", clientarray[player].name, remaining);
             clientarray[player].troops = remaining;
-            if (remaining == 0) {
+            if (remaining <= 0) {
                 clientarray[player].playing = -1;
+                clientarray[player].troops = 0;
                 int j;
                 for (j=0; j<MAXCLIENTS; j++) { /* award new troops to any who contributed to a knockout */
                     if (attackgrid[j][player] == 1) {
@@ -667,6 +678,9 @@ fprintf(stderr, "Final: %s: %d\n", clientarray[player].name, remaining);
                 }
             }
         }
+    }
+    for (player=0; player<MAXCLIENTS; player++) {
+    	clientarray[player].fighting = 0;
     }
 }
 
@@ -1485,8 +1499,9 @@ fprintf(stderr, "SERVER: waiting for %d, got message from %d\n", waitingfor, cli
                             if (i < MAXCLIENTS) {
                                 // Valid attack message - update attackgrid, increment waitingfor, reset timer, and return.
                                 fprintf(stderr, "Attack: %s to %s\n", clientarray[client_no].name, clientarray[i].name);
-                                attackgrid[client_no][i] = 1;
-//notify message goes here
+                                if (i != client_no) {
+                                	attackgrid[client_no][i] = 1;
+                                }
                                 waitingfor++;
                                 timerset = 0;
                                 return;
@@ -1805,9 +1820,11 @@ static void assign_name(char **name, int client_no)
 	/* update user information, send sjoin to new user and sstat to all other users */
 	clientarray[client_no].joined = 1;
 	numusers++;
-	build_user_list();
+	build_user_list_names();
 	sprintf(buf, "(sjoin(%s)(%s)(%d,%d,%d))", clientarray[client_no].name, listbuf, minplayers, lobbytime, timeout);
 	write_to_client(clientarray[client_no].socket, client_no, CLEAR);
+	memset(listbuf, '\0', MAXMESSAGE);
+	build_user_list();
 	for (i=0; i<MAXCLIENTS; i++) {
 		if (clientarray[i].joined == 1 && i != client_no) {
 			sprintf(buf, "(sstat(%s))", listbuf);
@@ -1815,6 +1832,32 @@ static void assign_name(char **name, int client_no)
 		}
 	}
 	memset(listbuf, '\0', MAXMESSAGE);
+}
+
+
+
+
+static void build_user_list_names()
+{
+	int added = 0;
+	int i;
+	for (i=0; i<MAXCLIENTS; i++) {
+		if (clientarray[i].joined != 0) {
+			if (added == 0) {
+				sprintf(listbuf, "%s", clientarray[i].name);
+			}
+			else {
+				strcat(listbuf, ",");
+				strcat(listbuf, clientarray[i].name);
+			}
+			added++;
+		}
+	}
+	if (added == numusers) {
+	}
+	else {
+fprintf(stderr, "Error: user list does not agree with numusers\n");
+	}
 }
 
 
@@ -1986,6 +2029,7 @@ void clear_clientinfo(int client_no)
 	clientarray[client_no].used = 0;
 	clientarray[client_no].joined = 0;
     clientarray[client_no].playing = 0;
+    clientarray[client_no].fighting = 0;
 	clientarray[client_no].sent = 0;
     clientarray[client_no].offersent = 0;
 	clientarray[client_no].socket = -1;
@@ -2009,6 +2053,7 @@ void initialize_clientinfo(int client_no)
 	clientarray[client_no].used = 0;
 	clientarray[client_no].joined = 0;
     clientarray[client_no].playing = 0;
+    clientarray[client_no].fighting = 0;
 	clientarray[client_no].sent = 0;
     clientarray[client_no].offersent = 0;
 	clientarray[client_no].socket = -1;
