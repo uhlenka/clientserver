@@ -17,7 +17,7 @@
 extern int errno;
 #define PROTOPORT 36724 /* default protocol port number */
 char localhost[] = "localhost"; /* default host name */
-char *uhlenka = "UHLENKA"; /* default client name */
+char *uhlenka = "AINSLEY"; /* default client name */
 
 /*------------------------------------------------------------------------
 * Program: byzantiumc
@@ -35,7 +35,7 @@ char *uhlenka = "UHLENKA"; /* default client name */
 * All arguments are optional. The default values are as follows:
 * 	server = "localhost"
 * 	port = 36724
-* 	name = "UHLENKA"
+* 	name = "AINSLEY"
 *
 *------------------------------------------------------------------------
 */
@@ -53,6 +53,8 @@ int port = -1; /* port to connect to */
 int manual = 0; /* manual mode indicator */
 
 int rwsocket; /* socket the client is connected to */
+char repliedto[15] = "\0"; /* the user this client most recently responded to */
+char attacking[15] = "\0"; /* the player this client will attack */
 
 int main(int argc, char *argv[])
 {
@@ -241,9 +243,14 @@ static void parse_message()
     					parse_message();
     				}
     			}
-    			else if (strcmp("ACTION", messagestart) == 0) { /* ACTION message - ATTACK the user called BOBBY */
+    			else if (strcmp("ACTION", messagestart) == 0) { /* ACTION message - attack designated player (if present) */
     				char action[200];
-    				sprintf(action, "(cchat(SERVER)(ACTION,%s,ATTACK,BOBBY))", roundstart);
+    				if (strcmp(attacking, "\0") != 0) {
+    					sprintf(action, "(cchat(SERVER)(ACTION,%s,ATTACK,%s))", roundstart, attacking);
+    				}
+    				else {
+    					sprintf(action, "(cchat(SERVER)(ACTION,%s,PASS))", roundstart);
+    				}
     				write(rwsocket, &action, strlen(action));
     				messageend++; messageend++;
     				if (*messageend != '\0') {
@@ -254,13 +261,14 @@ static void parse_message()
     				}
     			}
     		}
-    		//else {
-    		//	if (strcmp(senderstart,name) != 0) { /* chat from another player - reply */
-    		/*		char reply[200];
-    				sprintf(reply, "(cchat(%s)(You sent me a chat!))", senderstart);
+    		else {
+    			if (strcmp(senderstart,name) != 0 && strcmp(senderstart,repliedto) != 0) { /* chat from another player - reply if we haven't just done so */
+    				sprintf(repliedto, "%s", senderstart);
+    				char reply[200];
+    				sprintf(reply, "(cchat(%s)(COOLTRAINER %s sent out PSYDUCK!))", senderstart, name);
     				write(rwsocket, &reply, strlen(reply));
     			}
-    		}*/
+    		}
     	}
     }
     else if (strcmp("sjoin", typestart) == 0) {
@@ -318,6 +326,11 @@ static void parse_message()
     		result = find_player_end(&playerend, playerstart); *playerend = '\0';
     	}
     	write(1,playerstart,strlen(playerstart)); write(1,"\n",1);
+    	char *targetend = find_next_comma(playerstart); *targetend = '\0';
+    	sprintf(attacking, "%s", playerstart);
+    	if (strcmp(name, attacking) == 0) {
+    		attacking[0] = '\0';
+    	}
     	playerend++; playerend++;
     	if (*playerend != '\0') {
     		char tempbuf[200];
