@@ -146,47 +146,31 @@ int main(int argc, char *argv[])
     	fprintf(stderr, "Whatever text you enter will be sent to the server, as is, with no interpretation by the client.\n");
     }
 	
+	/* Main loop */
 	while (1) {
-        /*if (manual == 0) {
-            int n = recv(sd, buf, sizeof(buf), 0);
+        read_set = total_set;
+        if (select (FD_SETSIZE, &read_set, NULL, NULL, NULL) < 0) {
+            perror ("select");
+            exit (1);
+        }
+        if (manual != 0 && FD_ISSET (STDIN_FILENO, &read_set)) {
+            int n = read(STDIN_FILENO, buf, 1000);
+            if (strncmp(buf, "\n", 1) != 0 && strncmp(buf, "\r", 1) != 0) {
+                write(sd, &buf, n);
+            }
+        }
+        if (FD_ISSET (sd, &read_set)) {
+            n = recv(sd, buf, sizeof(buf), 0);
             if (n == 0) {
                 closesocket(i);
                 fprintf (stderr, "Connection dropped\n");
-                exit(0);
+                exit(1);
             }
             else {
-                write(1,buf,n); write(1, "\n", sizeof(char));
+            	parse_message();
             }
-            sleep(2);
-            sprintf(buf, "(cchat(ANY)(hello))");
-            write(sd, &buf, strlen(buf)*sizeof(char));
-            memset(buf, 0, 1000);
-		}
-        else {*/
-            read_set = total_set;
-            if (select (FD_SETSIZE, &read_set, NULL, NULL, NULL) < 0) {
-                perror ("select");
-                exit (1);
-            }
-            if (manual != 0 && FD_ISSET (STDIN_FILENO, &read_set)) {
-                int n = read(STDIN_FILENO, buf, 1000);
-                if (strncmp(buf, "\n", 1) != 0 && strncmp(buf, "\r", 1) != 0) {
-                    write(sd, &buf, n);
-                }
-            }
-            if (FD_ISSET (sd, &read_set)) {
-                n = recv(sd, buf, sizeof(buf), 0);
-                if (n == 0) {
-                    closesocket(i);
-                    fprintf (stderr, "Connection dropped\n");
-                    exit(1);
-                }
-                else {
-                	parse_message();
-                }
-            }
-            memset(buf, 0, 1000);
-        //}
+        }
+        memset(buf, 0, 1000);
     }
 	
 	/* Terminate the client program gracefully. */
@@ -223,6 +207,13 @@ static void parse_message()
     				char plan[200];
     				sprintf(plan, "(cchat(SERVER)(PLAN,%s,PASS))", roundstart);
     				write(rwsocket, &plan, strlen(plan));
+    				roundend++; roundend++;
+    				if (*roundend != '\0') {
+    					char tempbuf[200];
+    					sprintf(tempbuf, "%s", roundend);
+    					sprintf(buf, "%s", tempbuf);
+    					parse_message();
+    				}
     			}
     			else if (strcmp("OFFER", messagestart) == 0 || strcmp("OFFERL", messagestart) == 0) { /* OFFER message - send DECLINE */
     				char *allystart; char *allyend;
@@ -232,12 +223,35 @@ static void parse_message()
     					char response[200];
     					sprintf(response, "(cchat(SERVER)(DECLINE,%s,%s))", roundstart, allystart);
     					write(rwsocket, &response, strlen(response));
+    					allyend = find_next_paren(allyend); allyend++; allyend++;
+    					if (*allyend != '\0') {
+    						char tempbuf[200];
+    						sprintf(tempbuf, "%s", allyend);
+    						sprintf(buf, "%s", tempbuf);
+    						parse_message();
+    					}	
+    				}
+    				if (*allystart != '\0') {
+    					allystart++;
+    				}
+    				if (*allystart != '\0') {
+    					char tempbuf[200];
+    					sprintf(tempbuf, "%s", allystart);
+    					sprintf(buf, "%s", tempbuf);
+    					parse_message();
     				}
     			}
     			else if (strcmp("ACTION", messagestart) == 0) { /* ACTION message - ATTACK the user called BOBBY */
     				char action[200];
     				sprintf(action, "(cchat(SERVER)(ACTION,%s,ATTACK,BOBBY))", roundstart);
     				write(rwsocket, &action, strlen(action));
+    				messageend++; messageend++;
+    				if (*messageend != '\0') {
+    					char tempbuf[200];
+    					sprintf(tempbuf, "%s", messageend);
+    					sprintf(buf, "%s", tempbuf);
+    					parse_message();
+    				}
     			}
     		}
     		//else {
@@ -285,6 +299,13 @@ static void parse_message()
     		sprintf(intro,"(cchat(ALL)(COOLTRAINER %s wants to battle!))", name);
     		write(rwsocket, &intro, strlen(intro));
     	}
+    	numend++; numend++;
+    	if (*numend != '\0') {
+    		char tempbuf[200];
+    		sprintf(tempbuf, "%s", numend);
+    		sprintf(buf, "%s", tempbuf);
+    		parse_message();
+    	}
     }
     else if (strcmp("sstat", typestart) == 0) {
     	/* sstat message - print playerinfo \n playerinfo ..." */
@@ -297,6 +318,13 @@ static void parse_message()
     		result = find_player_end(&playerend, playerstart); *playerend = '\0';
     	}
     	write(1,playerstart,strlen(playerstart)); write(1,"\n",1);
+    	playerend++; playerend++;
+    	if (*playerend != '\0') {
+    		char tempbuf[200];
+    		sprintf(tempbuf, "%s", playerend);
+    		sprintf(buf, "%s", tempbuf);
+    		parse_message();
+    	}
     }
     else if (strcmp("strike", typestart) == 0) {
     	/* strike message - print "Strike strike# - reason" */
@@ -310,6 +338,13 @@ static void parse_message()
     	write(1," - ",3);
     	write(1,reasonstart,strlen(reasonstart));
     	write(1,"\n",1);
+    	reasonend++; reasonend++;
+    	if (*reasonend != '\0') {
+    		char tempbuf[200];
+    		sprintf(tempbuf, "%s", reasonend);
+    		sprintf(buf, "%s", tempbuf);
+    		parse_message();
+    	}
     }
     else {
     	/* message type not recognized - print to screen as-is */
