@@ -590,6 +590,7 @@ static void do_battle()
         for (i=0; i<MAXCLIENTS; i++) {
             if (i > player && (attackgrid[player][i] == 1 || attackgrid[i][player] == 1)) {
             	clientarray[player].fighting = 1;
+            	clientarray[i].fighting = 1;
                 if (attackgrid[player][i] == 1) { /* player is attacking - 3 rolls */
                     a.count = 3;
 fprintf(stderr, "%s (attacking) vs. %s ", clientarray[player].name, clientarray[i].name);
@@ -662,7 +663,7 @@ fprintf(stderr, "Result: %s: %d, %s: %d\n", clientarray[player].name, battlegrid
                     remaining += battlegrid[player][i];
                 }
             }
-fprintf(stderr, "Final: %s: %d\n", clientarray[player].name, remaining);
+//fprintf(stderr, "Final: %s: %d\n", clientarray[player].name, remaining);
             clientarray[player].troops = remaining;
             if (remaining <= 0) {
                 clientarray[player].playing = -1;
