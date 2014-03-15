@@ -671,7 +671,8 @@ fprintf(stderr, "Result: %s: %d, %s: %d\n", clientarray[player].name, battlegrid
                 int j;
                 for (j=0; j<MAXCLIENTS; j++) { /* award new troops to any who contributed to a knockout */
                     if (attackgrid[j][player] == 1) {
-                        clientarray[player].troops += startingforce;
+fprintf(stderr, "%s got new troops for killing %s\n", clientarray[j].name, clientarray[player].name);
+                        clientarray[j].troops += startingforce;
                         if (clientarray[player].troops > 99999) {
                             clientarray[player].troops = 99999;
                         }
@@ -836,11 +837,12 @@ fprintf (stderr, "Message: '%s' from client %d\n", clientarray[client_no].clibuf
                                 numchars++;
                                 tempbufp++;
                                 if (*tempbufp == ')') { /* proper cchat - send to valid recipients */
-fprintf (stderr, "Cchat: client %d\n", client_no);
+//fprintf (stderr, "Cchat: client %d\n", client_no);
 									if (clientarray[client_no].joined != 0) {
 										send_chat(&message, &recipients, client_no);
 									}
 									else {
+//fprintf(stderr, "Not joined\n");
 										send_strike(client_no, 'm');
 									}
                                     tempbufp++;
@@ -859,6 +861,7 @@ fprintf (stderr, "Cchat: client %d\n", client_no);
                                     return;
                                 }
                                 else { /* message malformed - send strike and resynchronize */
+//fprintf(stderr, "No ')'\n");
                                     send_strike(client_no, 'm');
                                     if (clientarray[client_no].used != 0) {
                                         sprintf(clientarray[client_no].clibuf, "%s", tempbufp);
@@ -871,6 +874,7 @@ fprintf (stderr, "Cchat: client %d\n", client_no);
                                 return;
                             }
                             else {
+//fprintf(stderr, "No second '('\n");
                                 send_strike(client_no, 'm');
                                 if (clientarray[client_no].used != 0) {
                                     sprintf(clientarray[client_no].clibuf, "%s", tempbufp);
@@ -883,6 +887,7 @@ fprintf (stderr, "Cchat: client %d\n", client_no);
                             return;
                         }
                         else {
+//fprintf(stderr, "No first '('\n");
                             send_strike(client_no, 'm');
                             if (clientarray[client_no].used != 0) {
                                 sprintf(clientarray[client_no].clibuf, "%s", tempbufp);
@@ -895,6 +900,7 @@ fprintf (stderr, "Cchat: client %d\n", client_no);
                         return;
                     }
                     else {
+//fprintf(stderr, "No 't'\n");
                         send_strike(client_no, 'm');
                         if (clientarray[client_no].used != 0) {
                             sprintf(clientarray[client_no].clibuf, "%s", tempbufp);
@@ -907,6 +913,7 @@ fprintf (stderr, "Cchat: client %d\n", client_no);
                     return;
                 }
                 else {
+//fprintf(stderr, "No 'a'\n");
                     send_strike(client_no, 'm');
                     if (clientarray[client_no].used != 0) {
                         sprintf(clientarray[client_no].clibuf, "%s", tempbufp);
@@ -919,6 +926,7 @@ fprintf (stderr, "Cchat: client %d\n", client_no);
                 return;
             }
             else {
+//fprintf(stderr, "No 'h'\n");
                 send_strike(client_no, 'm');
                 if (clientarray[client_no].used != 0) {
                     sprintf(clientarray[client_no].clibuf, "%s", tempbufp);
@@ -1050,6 +1058,7 @@ fprintf (stderr, "Name: client %d: %s\n", client_no, clientarray[client_no].name
                         if (*tempbufp == ')') { /* proper cstat - respond with sstat */
 fprintf (stderr, "Cstat: client %d\n", client_no);
 							if (clientarray[client_no].joined != 0) {
+fprintf (stderr, "Sending sstat to client %d\n", client_no);
                             	build_user_list();
                             	sprintf(buf, "(sstat(%s))", listbuf);
                             	memset(listbuf, '\0', MAXMESSAGE);
@@ -1493,7 +1502,7 @@ fprintf(stderr, "SERVER: waiting for %d, got message from %d\n", waitingfor, cli
                         *fieldend = '\0';
                         if (result == -1) {
                             for (i=0; i<MAXCLIENTS; i++) {
-                                if (strcmp(clientarray[i].name, fieldstart) == 0) {
+                                if (strcmp(clientarray[i].name, fieldstart) == 0 && clientarray[i].playing == 1) {
                                     break;
                                 }
                             }
@@ -1547,7 +1556,7 @@ fprintf(stderr, "SERVER: waiting for %d, got message from %d\n", waitingfor, cli
 	while (result != 0) {
 		namefound = 0;
 		for (i=0; i<MAXCLIENTS; i++) {
-			if (strcmp(clientarray[i].name, cnameptr) == 0) {
+			if (strcmp(clientarray[i].name, namestart) == 0) {
 				namefound = 1;
 				if (clientarray[i].sent == 0) {
 					sprintf(buf, "(schat(%s)(%s))", clientarray[client_no].name, short_message);
@@ -1574,7 +1583,7 @@ fprintf(stderr, "SERVER: waiting for %d, got message from %d\n", waitingfor, cli
 	}
 	namefound = 0;
 	for (i=0; i<MAXCLIENTS; i++) {
-		if (strcmp(clientarray[i].name, cnameptr) == 0) {
+		if (strcmp(clientarray[i].name, namestart) == 0) {
 			namefound = 1;
 			if (clientarray[i].sent == 0) {
 				sprintf(buf, "(schat(%s)(%s))", clientarray[client_no].name, short_message);
