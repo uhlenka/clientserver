@@ -17,7 +17,7 @@
 extern int errno;
 #define PROTOPORT 36724 /* default protocol port number */
 char localhost[] = "localhost"; /* default host name */
-char *uhlenka = "AINSLEY"; /* default client name */
+char *ainsley = "AINSLEY"; /* default client name */
 
 /*------------------------------------------------------------------------
 * Program: byzantiumc
@@ -99,7 +99,7 @@ int main(int argc, char *argv[])
         port = PROTOPORT;
     }
     if (strlen(name) == 0) {
-        sprintf(name, "%s", uhlenka);
+        sprintf(name, "%s", ainsley);
     }
 
     if (port > 0) /* test for legal value */
@@ -210,12 +210,13 @@ static void parse_message()
     				sprintf(plan, "(cchat(SERVER)(PLAN,%s,PASS))", roundstart);
     				write(rwsocket, &plan, strlen(plan));
     				roundend++; roundend++;
-    				if (*roundend != '\0') {
+    				/*if (*roundend != '\0') {
+fprintf(stderr, "Next message in buffer: %s\n", roundend);
     					char tempbuf[200];
     					sprintf(tempbuf, "%s", roundend);
     					sprintf(buf, "%s", tempbuf);
     					parse_message();
-    				}
+    				}*/
     			}
     			else if (strcmp("OFFER", messagestart) == 0 || strcmp("OFFERL", messagestart) == 0) { /* OFFER message - send DECLINE */
     				char *allystart; char *allyend;
@@ -252,8 +253,18 @@ static void parse_message()
     					sprintf(action, "(cchat(SERVER)(ACTION,%s,PASS))", roundstart);
     				}
     				write(rwsocket, &action, strlen(action));
-    				messageend++; messageend++;
+    				messageend++; messageend++; messageend++;
     				if (*messageend != '\0') {
+    					char tempbuf[200];
+    					sprintf(tempbuf, "%s", messageend);
+    					sprintf(buf, "%s", tempbuf);
+    					parse_message();
+    				}
+    			}
+    			else {
+    				messageend = find_next_paren(messagestart); messageend++;
+    				if (*messageend != '\0') {
+fprintf(stderr, "Next message in buffer: %s\n", messageend);
     					char tempbuf[200];
     					sprintf(tempbuf, "%s", messageend);
     					sprintf(buf, "%s", tempbuf);
@@ -265,7 +276,7 @@ static void parse_message()
     			if (strcmp(senderstart,name) != 0 && strcmp(senderstart,repliedto) != 0) { /* chat from another player - reply if we haven't just done so */
     				sprintf(repliedto, "%s", senderstart);
     				char reply[200];
-    				sprintf(reply, "(cchat(%s)(COOLTRAINER %s sent out PSYDUCK!))", senderstart, name);
+    				sprintf(reply, "(cchat(%s)(COOLTRAINER %s sent out PSYDUCK!))", repliedto, name);
     				write(rwsocket, &reply, strlen(reply));
     			}
     		}
@@ -327,8 +338,10 @@ static void parse_message()
     	}
     	write(1,playerstart,strlen(playerstart)); write(1,"\n",1);
     	char *targetend = find_next_comma(playerstart); *targetend = '\0';
+    	char *troopsstart = find_next_comma(targetend); troopsstart++;
+    	char *troopsend = find_next_paren(troopsstart); *troopsend = '\0';
     	sprintf(attacking, "%s", playerstart);
-    	if (strcmp(name, attacking) == 0) {
+    	if (strcmp(name, attacking) == 0 || strcmp("0", troopsstart) == 0) {
     		attacking[0] = '\0';
     	}
     	playerend++; playerend++;
