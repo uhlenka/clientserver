@@ -666,6 +666,7 @@ fprintf(stderr, "Result: %s: %d, %s: %d\n", clientarray[player].name, battlegrid
 //fprintf(stderr, "Final: %s: %d\n", clientarray[player].name, remaining);
             clientarray[player].troops = remaining;
             if (remaining <= 0) {
+fprintf(stderr, "%s was killed!\n", clientarray[player].name);
                 clientarray[player].playing = -1;
                 clientarray[player].troops = 0;
                 int j;
@@ -673,8 +674,8 @@ fprintf(stderr, "Result: %s: %d, %s: %d\n", clientarray[player].name, battlegrid
                     if (attackgrid[j][player] == 1) {
 fprintf(stderr, "%s got new troops for killing %s\n", clientarray[j].name, clientarray[player].name);
                         clientarray[j].troops += startingforce;
-                        if (clientarray[player].troops > 99999) {
-                            clientarray[player].troops = 99999;
+                        if (clientarray[j].troops > 99999) {
+                            clientarray[j].troops = 99999;
                         }
                     }
                 }
@@ -1218,7 +1219,7 @@ static void send_chat(char **message, char **recipients, int client_no)
 
 	/* Check for "ANY" or "ALL" recipient. */
 	if (result == 0) {
-		if (strcmp("ANY", namestart) == 0) {
+		if (strcasecmp("ANY", namestart) == 0) {
             /* Cchat to ANY - send to valid user. */
 			if (numusers > 1) {
 				if (numusers == 2) {
@@ -1244,7 +1245,7 @@ static void send_chat(char **message, char **recipients, int client_no)
 			}
 			return;
 		}
-		else if (strcmp("ALL", namestart) == 0) {
+		else if (strcasecmp("ALL", namestart) == 0) {
             /* Cchat to ALL - send to all users. */
 			for (i=0; i<MAXCLIENTS; i++) {
 				if (clientarray[i].joined != 0) {
@@ -1302,7 +1303,7 @@ fprintf(stderr, "SERVER: waiting for %d, got message from %d\n", waitingfor, cli
                     *fieldend = '\0';
                     if (result == -1 && strcmp("PASS", fieldstart) == 0) { // check for PASS action
                         // Player passes - increment waitingfor, reset timer, and return.
-                        fprintf(stderr, "Pass: %s\n", clientarray[client_no].name);
+                        fprintf(stderr, "PASS: %s\n", clientarray[client_no].name);
                         waitingfor++;
                         timerset = 0;
                         return;
@@ -1349,13 +1350,13 @@ fprintf(stderr, "SERVER: waiting for %d, got message from %d\n", waitingfor, cli
                             if (target < MAXCLIENTS && clientarray[target].used != 0) { // check for valid target
                                 // Player has made a valid offer - add info to offergrid, increment waitingfor, reset timer, and return.
                                 if (ally != client_no) {
-                                    fprintf(stderr, "Approach: %s to %s, attacking %s\n", clientarray[client_no].name, clientarray[ally].name, clientarray[target].name);
+                                    fprintf(stderr, "APPROACH: %s to %s, attacking %s\n", clientarray[client_no].name, clientarray[ally].name, clientarray[target].name);
                                     offergrid[ally][client_no].target = target;
 //fprintf(stderr, "offergrid[ally][client_no].used = %d\n", offergrid[ally][client_no].used);
 //fprintf(stderr, "offergrid[ally][client_no].target = %d\n", offergrid[ally][client_no].target);
                                 }
                                 else {
-                                    fprintf(stderr, "Approach: %s to self, attacking %s\n", clientarray[client_no].name, clientarray[target].name);
+                                    fprintf(stderr, "APPROACH: %s to self, attacking %s\n", clientarray[client_no].name, clientarray[target].name);
 //fprintf(stderr, "offergrid[ally][client_no].used = %d\n", offergrid[ally][client_no].used);
 //fprintf(stderr, "offergrid[ally][client_no].target = %d\n", offergrid[ally][client_no].target);
                                 }
@@ -1435,7 +1436,7 @@ fprintf(stderr, "SERVER: waiting for %d, got message from %d\n", waitingfor, cli
                         // Valid offer response - send response to ally, increment responseto, reset timer, and return.
                         char actionbuf[8];
                         sprintf(actionbuf, "%s", action);
-                        fprintf(stderr, "%s: %s to %s\n", actionbuf, clientarray[client_no].name, clientarray[responseto].name);
+						fprintf(stderr, "%s: %s to %s\n", actionbuf, clientarray[client_no].name, clientarray[responseto].name);
                         sprintf(buf, "(schat(SERVER)(%s,%d,%s))", actionbuf, roundnum, clientarray[client_no].name);
                         write_to_client(clientarray[responseto].socket, responseto, CLEAR);
                         responseto++;
@@ -1489,7 +1490,7 @@ fprintf(stderr, "SERVER: waiting for %d, got message from %d\n", waitingfor, cli
                     *fieldend = '\0';
                     if (result == -1 && strcmp("PASS", fieldstart) == 0) {
                         // Player passes - increment waitingfor, reset timer, and return.
-                        fprintf(stderr, "Pass: %s\n", clientarray[client_no].name);
+                        fprintf(stderr, "PASS: %s\n", clientarray[client_no].name);
                         waitingfor++;
                         timerset = 0;
                         return;
@@ -1508,7 +1509,7 @@ fprintf(stderr, "SERVER: waiting for %d, got message from %d\n", waitingfor, cli
                             }
                             if (i < MAXCLIENTS) {
                                 // Valid attack message - update attackgrid, increment waitingfor, reset timer, and return.
-                                fprintf(stderr, "Attack: %s to %s\n", clientarray[client_no].name, clientarray[i].name);
+                                fprintf(stderr, "ATTACK: %s to %s\n", clientarray[client_no].name, clientarray[i].name);
                                 if (i != client_no) {
                                 	attackgrid[client_no][i] = 1;
                                 }
